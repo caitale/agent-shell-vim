@@ -7,6 +7,7 @@
 | 目录 | 内容 | 状态 |
 |---|---|---|
 | `acp-spike/` | ACP 协议闭环 spike：Vim9 最小客户端 + mock agent + headless 测试（7/7 PASS） | ✅ 已完成，结论可行 |
+| `competitive-analysis/` | 竞品分析（Emacs agent-shell / Neovim agentic.nvim）与 M0–M5 roadmap | ✅ 已定稿，正式开发依据 |
 
 ## acp-spike 核心结论（速览）
 
