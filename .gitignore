@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Vim
+*.swp
+*.swo
+
+# 测试产物（spike 测试写入 /tmp，此为防御性排除）
+/tmp/
