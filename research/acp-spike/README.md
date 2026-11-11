@@ -70,6 +70,14 @@ pi coding agent（1.5.0）**本体无 ACP 支持**——其 `--mode rpc` 是自�
 let g:acp_agent_cmd = ['env', '-u', 'NODE_OPTIONS', 'pi-acp']
 ```
 
+### 第三方 API（auth token 路径）验证（2026-11-11）
+
+本机 claude CLI **非官方订阅**，走第三方协议兼容 API：`ANTHROPIC_BASE_URL=http://127.0.0.1:3425`（magpie 本地代理）+ `ANTHROPIC_AUTH_TOKEN`，模型映射 `zcode/GLM-5.3`（与 pi 同一代理）。**结论：无影响，ACP 链路完全透明**——适配器 spawn claude CLI，CLI 自行读取 env 完成认证与路由，ACP 层只搬运 JSON-RPC。
+
+- 复跑冒烟 3/3 PASS（`pong`、end_turn、usage 正常），此时实际模型已是 GLM-5.3
+- 回看 11-10 首次冒烟（当时配置相同）：同样走第三方路径成功，即"claude 冒烟"自始就是第三方 API 验证
+- **对插件设计的启示**：凭证与路由全在 agent 侧（CLI env / 桥），ACP 客户端无需任何 provider 感知——这正是 ACP vendor-neutral 设计的兑现。M0 的 preset 只需存启动命令，不碰凭证
+
 ### 对拍发现（mock vs 真实 wire format 差异）
 
 | 差异点 | mock 旧版（想当然） | 真实 ACP（claude-agent-acp 实测） |
