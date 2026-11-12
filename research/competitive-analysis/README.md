@@ -64,12 +64,28 @@
 
 | 里程碑 | 内容 | spike 现状 |
 |---|---|---|
-| **M0 骨架** | `plugin/` + vim9script `import autoload` 模块化；三 agent preset（mock / claude-agent-acp / pi-geohar 桥）；headless 测试迁移 | 协议层已验证 ✅ |
-| **M1 可用聊天** | 聊天 buffer；流式渲染全类型（message / thought / tool_call / usage / plan）；权限 y/n；折叠降级（`foldmethod=marker`） | 渲染雏形 ✅ |
-| **M2 diff 审查** | 结构化 diff（oldText/newText）→ vimdiff 展示 + 接受/拒绝 | README 已规划 |
+| **M0 骨架** | `plugin/` + vim9script `import autoload` 模块化；三 agent preset（mock / claude-agent-acp / pi-geohar 桥）；headless 测试迁移；CI workflow 骨架（action-setup-vim 版本矩阵跑 mock 测试） | 协议层已验证 ✅ |
+| **M1 可用聊天 + UI 基线** | 聊天 buffer；流式渲染全类型（message / thought / tool_call / usage / plan）；权限 y/n；折叠降级（`foldmethod=marker`）。**UI 基线**（见下节）：窗口布局（首版右侧垂直分割，`:AgentOpen [right\|bottom]`）；可编辑输入区（聊天 buffer 尾部保留输入区或独立 prompt buffer，M0 预留接口）；消息类型高亮（syntax region / matchaddpos）；状态指示（轮次进行中提示，busy 动画降级实现） | 渲染雏形 ✅ |
+| **M2 diff 审查** | 结构化 diff（oldText/newText）→ vimdiff 展示 + 接受/拒绝；**入口交互**：工具调用折叠块上按 `d`，或权限请求时自动弹出 | README 已规划 |
 | **M3 会话管理** | session/list / load / resume；多会话切换；编辑器↔终端会话互通 | 桥能力已确认 |
-| **M4 生产化** | @文件 / /斜杠补全（available_commands_update 已在采集）；prompt 队列；成本显示；模型/模式切换；**图片附件**（base64 → ACP image block，纯数据操作，无需图形协议） | 数据源已在流里 |
-| **M5 差异化** | **traffic 回放测试**（零 token CI，抄 agent-shell 思路）；**steering**（`_session/steering`）；图片预览探索 | 渐进 |
+| **M4 生产化** | @文件 / /斜杠补全（**Vim 原生 `complete()`，不引外部依赖**，available_commands_update 已在采集）；prompt 队列；成本显示；模型/模式切换；**图片附件**（base64 → ACP image block，纯数据操作，无需图形协议） | 数据源已在流里 |
+| **M5 差异化** | **traffic 回放测试**（零 token CI，抄 agent-shell 思路）；**steering**（`_session/steering`）；图片预览探索；**popup window 悬浮预览**（`popup_atcursor` 等，工具输出/图片占位——Vim 9.1+ 特有优势，Neovim 插件无法在 Vim 运行） | 渐进 |
+
+### UI 基线（M1 起明确归属，2026-11-12 补遗）
+
+此前 UI 项散落各阶段，现收拢明确：
+
+| UI 项 | 归属 | 方案 |
+|---|---|---|
+| 窗口布局 | M1 | 首版右侧垂直分割（agentic.nvim 默认布局），`:AgentOpen [right\|bottom]` 可选 |
+| 输入区形态 | M1（M0 预留接口） | 聊天 buffer 尾部保留可编辑输入区，或独立 prompt buffer；替代 spike 的"写一行按 CR" |
+| 消息类型高亮 | M1 | syntax region / `matchaddpos` 区分消息/工具/思考块 |
+| 状态指示（busy） | M1 | 轮次进行中 statusline/提示；busy 动画用 Vim 原语降级实现 |
+| diff 入口 | M2 | 折叠块上按 `d` 或权限时自动弹出 vimdiff |
+| 补全 UI | M4 | 原生 `complete()` 弹窗，零依赖 |
+| 悬浮预览 | M5 | popup window（Vim 9.1+ 独有优势） |
+
+**已知约束与风险**：Vim 无 extmarks（inline 锚定不可行）、无现成 markdown 渲染器（Neovim 标杆的 UI 护城河依赖其基础设施）。**markdown 渲染是 UI 板块最大隐形工作量**——M1 先纯文本 + 代码块缩进，M4/M5 再评估借 markdown-ft-plugin 或自写轻量渲染。纯 VimL 可完成全部 UI 基线，无外部依赖。
 
 ### 图片输入的技术拆解（M4/M5 边界）
 
