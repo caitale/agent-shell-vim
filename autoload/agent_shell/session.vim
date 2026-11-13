@@ -14,6 +14,7 @@ import autoload './presets.vim'
 
 var session_id = ''
 var perm_id_pending = 0        # 挂起的权限请求 id（0 = 无）
+var busy = false               # 轮次进行中（design D6：状态查询函数而非事件）
 const ID_INITIALIZE = 1        # 握手 id 固定分段（由本模块向 protocol 取号后记录）
 const ID_SESSION_NEW = 2
 var id_initialize = 0
@@ -25,6 +26,10 @@ enddef
 
 export def SessionId(): string
   return session_id
+enddef
+
+export def IsBusy(): bool
+  return busy
 enddef
 
 # ---------- 启动 / 停止 ----------
@@ -69,6 +74,10 @@ export def Stop()
   protocol.Stop()
   session_id = ''
   perm_id_pending = 0
+  if busy
+    busy = false
+    render.NotifyBusyChanged()
+  endif
   render.Log('ACP', '已停止')
 enddef
 
@@ -103,6 +112,8 @@ export def SendPromptText(text: string)
   if !EnsureReady()
     return
   endif
+  busy = true
+  render.NotifyBusyChanged()
   SendRaw({
     jsonrpc: '2.0', id: protocol.NextId(), method: 'session/prompt',
     params: {
@@ -168,6 +179,7 @@ def HandleResponse(msg: dict<any>)
     else
       render.Log('ERR', $'请求失败（id={id}）：{err->get("message", "")}')
     endif
+    BusyClear()
     return
   endif
   var result = msg->get('result', {})
@@ -180,6 +192,14 @@ def HandleResponse(msg: dict<any>)
   elseif id > ID_SESSION_NEW
     var stop = type(result) == v:t_dict ? result->get('stopReason', '?') : '?'
     render.Log('ACP', $'轮次结束 stopReason={stop}')
+    BusyClear()
+  endif
+enddef
+
+def BusyClear()
+  if busy
+    busy = false
+    render.NotifyBusyChanged()
   endif
 enddef
 
@@ -216,5 +236,6 @@ def SendRaw(msg: dict<any>)
   protocol.DumpOutgoing(json_encode(msg))
   if !protocol.Send(msg)
     render.Log('ERR', '发送失败：agent 未运行')
+    BusyClear()
   endif
 enddef

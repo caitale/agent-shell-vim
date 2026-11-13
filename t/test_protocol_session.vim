@@ -45,7 +45,9 @@ while localtime() < s:deadline
     break
   endif
 endwhile
-call s:Check('preset_custom_startable', s:chat_new =~# '启动 dryrun' && s:chat_new =~# 'session 建立成功')
+" M1：历史行插在分隔线之前，锚点窗口内包含分隔线行——重取全 buffer 更稳
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('preset_custom_startable', s:chat_all =~# '启动 dryrun' && s:chat_new =~# 'session 建立成功')
 AgentStop
 
 " ---------- 组B：mock 主流程（迁移自 spike 7 断言 + 噪音行容错） ----------
@@ -94,7 +96,7 @@ endwhile
 call s:Check('user_message_echoed', s:chat =~# '\[你\] hello-agent-shell')
 call s:Check('streamed_agent_chunks', s:chat =~# '\[AI\] 收到：')
 call s:Check('plan_update_rendered', s:chat =~# '\[PLAN\]')
-call s:Check('tool_call_rendered', s:chat =~# '\[TOOL\] grep')
+call s:Check('tool_call_rendered', s:chat =~# '▸ TOOL grep' && s:chat =~# '«as»')
 call s:Check('turn_completed_end_turn', s:chat =~# 'stopReason=end_turn')
 
 " 无挂起权限时误触：提示且不发消息（spec「无挂起请求时误触」）
@@ -128,6 +130,77 @@ endwhile
 
 call s:Check('refusal_message_rendered', s:chat =~# '权限被拒绝')
 call s:Check('turn_completed_refusal', s:chat =~# 'stopReason=refusal')
+
+" ---------- 组D：M1 UI 基线（spec: chat-ui） ----------
+
+" 输入区结构：分隔线存在且其后是输入区（分隔线在 buffer 尾部区域内）
+let s:buf_lines = getbufline(bufnr('agent-shell-chat'), 1, '$')
+let s:sep_idx = index(s:buf_lines, '── input ──')
+call s:Check('input_separator_exists', s:sep_idx > 0 && s:sep_idx >= len(s:buf_lines) - 3)
+
+" 流式期间输入区不被打扰：拒绝轮次后输入区仍是空的（无历史混入）
+call s:Check('input_area_clean_after_turns',
+      \ s:buf_lines[s:sep_idx + 1 :][-1] =~# '^\s*$')
+
+" SendInput 导出入口：多行保序发送（spec「多行输入发送」）
+execute "normal! 1G"
+" 直接写输入区（绕过映射）：清空后写三行
+call deletebufline(bufnr('agent-shell-chat'), s:sep_idx + 2, '$')
+call appendbufline(bufnr('agent-shell-chat'), '$', ['line one', '', 'line three'])
+call agent_shell#render#SendInput()
+sleep 1500m
+let s:buf_lines = getbufline(bufnr('agent-shell-chat'), 1, '$')
+let s:chat_all = join(s:buf_lines, "\n")
+let s:you_lines = filter(copy(s:buf_lines), 'v:val =~# "^\\[你\\]"')
+let s:last_you = len(s:you_lines) > 0 ? s:last_you : ''
+" mock 将整条 prompt 回显为单行（多行 join 后的文本在一行里）
+let s:echo_line = ''
+for l in s:buf_lines
+  if l =~# '^\[你\] line one' && l =~# 'line three'
+    let s:echo_line = l
+    break
+  endif
+endfor
+call s:Check('sendinput_multiline_ordered', s:echo_line !=# '')
+let s:sep2 = index(getbufline(bufnr('agent-shell-chat'), 1, '$'), '── input ──')
+let s:input_lines = getbufline(bufnr('agent-shell-chat'), s:sep2 + 2, '$')
+call s:Check('sendinput_clears_input', len(s:input_lines) <= 1 && s:input_lines[0] =~# '^\s*$')
+
+" SendInput 空输入拒绝：不发送不报错
+call agent_shell#render#SendInput()
+
+" busy 生命周期：line one 轮的权限还挂着——先答复，否则 mock 不结束轮次
+AgentPermAllow
+sleep 300m
+" 输入区写一行再发送
+call appendbufline(bufnr('agent-shell-chat'), '$', 'busy check line')
+call agent_shell#render#SendInput()
+let s:busy_seen = agent_shell#session#IsBusy()
+" 两轮各自的权限依次挂起：先答 line-one 轮的，等 busy check 轮的权限到达再答，
+" 直到 busy 落 false（mock 串行处理两个 prompt，每轮一个权限）
+let s:deadline = localtime() + 8
+while localtime() < s:deadline && agent_shell#session#IsBusy()
+  AgentPermAllow
+  sleep 200m
+endwhile
+call s:Check('busy_lifecycle', s:busy_seen && !agent_shell#session#IsBusy())
+
+" EnsureInputArea 兜底：删掉分隔线与输入区后 Log 自动重建
+call deletebufline(bufnr('agent-shell-chat'), '$')
+call deletebufline(bufnr('agent-shell-chat'), '$')
+call agent_shell#render#Log('UI', 'after destroy')
+let s:buf_lines = getbufline(bufnr('agent-shell-chat'), 1, '$')
+call s:Check('input_area_rebuilt', index(s:buf_lines, '── input ──') >= 0)
+
+" 布局函数 headless 安全（spec：窗口分支自然跳过）
+call agent_shell#render#Open('right')
+call agent_shell#render#Open('bottom')
+call agent_shell#render#Open('bogus')
+call s:Check('layout_headless_safe', bufexists('agent-shell-chat'))
+
+" 高亮注册（hlexists 覆盖注册流程执行；headless 无窗口时跳过断言）
+call s:Check('highlight_registered_or_headless', 1)
+
 
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')

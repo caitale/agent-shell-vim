@@ -20,11 +20,16 @@ Plug 'caitale/agent-shell-vim'
 
 ```vim
 :AgentStart          " 启动默认 preset（mock）并握手
-:AgentOpen           " 打开聊天窗口；写一行普通文本按 <CR> 发送
-                     " 权限请求到达后按 y（允许）/ n（拒绝）
-:AgentSend hello     " 脚本化发送
+:AgentOpen right     " 右侧垂直分割打开聊天窗口（默认 bottom 底部分割）
+" 聊天 buffer 尾部是常驻输入区（── input ── 分隔线之下）：
+"   多行编辑后按 <CR> 发送（normal/insert 模式均可）
+"   换行方式：粘贴多行，或 insert 模式 <C-V><CR>
+" 权限请求到达后按 y（允许）/ n（拒绝）
+:AgentSend hello     " 脚本化发送（不经输入区）
 :AgentStop
 ```
+
+历史区请勿手改（行以 `[` 开头受发送防线保护，改了只影响显示不影响协议）。
 
 ## 内置 preset
 
@@ -53,11 +58,17 @@ let g:agent_shell_agents = {
 | `g:agent_shell_agents` | 自定义 preset 表（上） | `{}` |
 | `g:agent_shell_verbose` | 非 0 透传 agent stderr（排障） | 0 |
 | `g:agent_shell_debug` | 非空时原始 JSONL 双向落盘路径 | `''` |
+| `g:agent_shell_layout` | 窗口布局：`'bottom'` \| `'right'` | `'bottom'` |
+| `g:agent_shell_right_width` | right 布局宽度（列） | 46 |
+| `g:agent_shell_bottom_height` | bottom 布局高度（行） | 12 |
+| `g:agent_shell_highlight` | 消息类型高亮开关 | 1 |
+
+UI 说明：轮次进行中聊天窗口状态行显示旋转 busy 指示；工具调用渲染为折叠块（自定义 marker `«as»`，`zo/zc` 开合）。
 
 ## 测试
 
 ```sh
-./t/run.sh        # headless 全链路（14 断言，零 token）
+./t/run.sh        # headless 全链路（22 断言，零 token）
 # 真实 agent 冒烟（手动，耗 token）：
 vim -Nu NONE -n -es -c 'let g:agent_shell_smoke = "claude"' -S t/smoke_real.vim -c 'qa!'
 ```
@@ -66,7 +77,7 @@ CI：GitHub Actions，Vim 9.1/9.2 矩阵（`.github/workflows/test.yml`）。
 
 ## Roadmap
 
-M0 骨架（当前）→ M1 聊天 + UI 基线（布局/输入区/高亮/折叠）→ M2 diff 审查（vimdiff）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
+M0 骨架 ✅ → M1 聊天 + UI 基线 ✅（布局/输入区/busy/折叠/高亮）→ M2 diff 审查（vimdiff）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
 
 ## 目录
 

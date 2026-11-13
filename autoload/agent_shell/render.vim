@@ -1,13 +1,30 @@
 vim9script
-# render.vim — 聊天 buffer 渲染与窗口呈现（纯被动方：不依赖任何模块）
+# render.vim — 聊天 buffer 渲染、窗口布局、输入区、busy 指示、折叠与高亮
 #
-# 设计（design D1/D2）：buffer 用 bufadd/bufload 创建，无窗口依赖，
-# headless (-es) 与交互模式行为一致（spike 实证 headless 下 :new 静默失败）。
-# 本模块不 import 其他模块——被 session 调用，单向依赖。
+# 设计依据：openspec/changes/add-chat-ui-baseline/design.md（D1-D5）
+#  - buffer 结构：[历史区][分隔线][输入区]，input_lnum 锚定分隔线行号
+#  - 历史追加插到分隔线之前；输入区常驻尾部；undo 树切断防锚点漂移
+#  - busy 画在窗口局部 statusline（零 buffer 残留），timer 仅窗口显示时启动
+#  - tool_call 折叠块用自定义 marker «as»,«/as»（防误折叠 vim 内容）
+#  - 依赖说明：M1 起 render 顶层 import session（IsBusy 轮询）。
+#    session 也 import render —— 形成环，但 vim9script 的 import autoload
+#    是符号级惰性加载，实测环内相互调用在 def 编译期可解析（本轮验证）；
+#    若后续出问题，回退方案是 NotifyBusyChanged 由 session 直调本模块私有 API
+
+import autoload './session.vim'
 
 const BUFNAME = 'agent-shell-chat'
+const SEPARATOR = '── input ──'
+const FOLD_OPEN = '«as»'
+const FOLD_CLOSE = '«/as»'
 
-# 聊天 buffer（懒创建，headless 安全）
+var input_lnum = 0          # 分隔线所在行（其下全部是输入区）
+var busy_timer = 0          # 0 = 无 timer
+var busy_frame_idx = 0
+const BUSY_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+# ---------- buffer 基础 ----------
+
 def ChatBuf(): number
   if !bufexists(BUFNAME)
     var b = bufadd(BUFNAME)
@@ -15,20 +32,76 @@ def ChatBuf(): number
     setbufvar(b, '&buftype', 'nofile')
     setbufvar(b, '&bufhidden', 'hide')
     setbufvar(b, '&swapfile', 0)
+    # undo 树切断（design W3）：appendbufline 会进 undo 历史，
+    # 用户一次 u 就能把分隔线/输入区卷掉导致锚点失步
+    setbufvar(b, '&undolevels', -1)
+    # 初始结构：空历史 + 分隔线 + 一行空输入
+    appendbufline(b, '$', [SEPARATOR, ''])
+    input_lnum = len(getbufline(b, 1, '$')) - 1
   endif
+  Reanchor()
   return bufnr(BUFNAME)
 enddef
 
-# 通用日志行（spec：各场景的"呈现"通道）
-export def Log(kind: string, text: string)
-  appendbufline(ChatBuf(), '$', $'[{kind}] {text}')
+# 按分隔线文本重锚（undo/手改的最后防线，每次 Log 入口调用）
+def Reanchor()
+  var b = bufnr(BUFNAME)
+  if b == -1
+    return
+  endif
+  var lines = getbufline(b, 1, '$')
+  var found = 0
+  for i in range(len(lines) - 1, 0, -1)  # 从尾找最近一条分隔线
+    if lines[i] ==# SEPARATOR
+      found = i + 1  # 行号从 1 计
+      break
+    endif
+  endfor
+  if found > 0
+    input_lnum = found
+  else
+    EnsureInputArea()
+  endif
 enddef
 
-# session/update 渲染入口（spec：acp-session「wire format 判别」已知类型 + tasks 4.2 逐类型行为）
-# upd 结构：{sessionUpdate: '<type>', ...payload}
+# 兜底：分隔线/输入区被删光时重建（返回分隔线行号）
+def EnsureInputArea(): number
+  var b = bufnr(BUFNAME)
+  if b == -1
+    call ChatBuf()
+    return input_lnum
+  endif
+  var lines = getbufline(b, 1, '$')
+  var has_sep = index(lines, SEPARATOR) >= 0
+  if !has_sep
+    if len(lines) == 1 && lines[0] ==# ''
+      deletebufline(b, 1)
+    endif
+    appendbufline(b, '$', [SEPARATOR, ''])
+    input_lnum = len(getbufline(b, 1, '$')) - 1
+  endif
+  return input_lnum
+enddef
+
+# 历史追加：插到分隔线之前，锚点下移（输入区保持最尾）
+def LogLines(rows: list<string>)
+  var b = ChatBuf()
+  appendbufline(b, input_lnum - 1, rows)
+  input_lnum += len(rows)
+enddef
+
+export def Log(kind: string, text: string)
+  LogLines([$'[{kind}] {text}'])
+enddef
+
+# ---------- update 渲染（逐类型行为，spec: acp-session + chat-ui） ----------
+
+var did_mark_thought = false
+
 export def Update(upd: any)
   var st = upd->get('sessionUpdate', '')
   if st ==# 'user_message_chunk'
+    did_mark_thought = false
     Log('你', upd->get('content', {})->get('text', ''))
   elseif st ==# 'agent_message_chunk'
     Log('AI', upd->get('content', {})->get('text', ''))
@@ -36,25 +109,43 @@ export def Update(upd: any)
     var first = upd->get('entries', [])->get(0, {})
     Log('PLAN', $'{first->get("content", "")} ({first->get("status", "")})')
   elseif st ==# 'tool_call'
-    Log('TOOL', $'{upd->get("title", "")}: {upd->get("status", "")}')
+    RenderToolCall(upd)
   elseif st ==# 'available_commands_update'
     var cmds = upd->get('availableCommands', [])
     Log('CMD', $'可用斜杠命令 {len(cmds)} 个：' .. cmds->mapnew((_: number, c: any) => c->get('name', '?'))->join(' '))
   elseif st ==# 'agent_thought_chunk'
-    # 提示级渲染（tasks 4.2）：思考流不逐 chunk 呈现，仅在首个 chunk 标记一次
     if !did_mark_thought
       Log('AI', '…（思考中）')
       did_mark_thought = true
     endif
   elseif st ==# 'usage_update'
-    # 提示级渲染（tasks 4.2）：单行摘要
     Log('USE', CompactUsage(upd))
   else
-    # 未知类型：静默跳过，前向兼容（spec「未知类型容错」）
+    # 未知类型静默跳过（spec：前向兼容）
   endif
 enddef
 
-var did_mark_thought = false
+# tool_call 折叠块（design D3）：
+#   ▸ TOOL title: status «as»1
+#     <content>
+#   «/as»
+def RenderToolCall(upd: dict<any>)
+  var title = upd->get('title', '')
+  var status = upd->get('status', '')
+  var content = ''
+  var c = upd->get('content', {})
+  if type(c) == v:t_dict
+    content = c->get('text', '')
+  endif
+  var rows: list<string> = [$'▸ TOOL {title}: {status} {FOLD_OPEN}1']
+  if content !=# ''
+    for line in split(content, "\n")
+      add(rows, '  ' .. line)
+    endfor
+  endif
+  add(rows, FOLD_CLOSE)
+  LogLines(rows)
+enddef
 
 def CompactUsage(upd: dict<any>): string
   var u = upd->get('usage', upd)
@@ -67,46 +158,180 @@ def CompactUsage(upd: dict<any>): string
   return empty(parts) ? '(usage)' : parts->join(' ')
 enddef
 
-# 每个用户轮次开始时由 session 侧调用重置思考标记（当前由 Update 的
-# user_message_chunk 隐式触发即可；M1 输入区落地时改为显式调用）
-export def ResetTurn()
-  did_mark_thought = false
-enddef
+# ---------- 输入区发送（export：映射与测试共用入口，design W7） ----------
 
-# ---------- 窗口呈现（spec：spike OpenChat 等价迁移） ----------
-
-export def Open()
+export def SendInput()
   var b = ChatBuf()
-  if bufwinnr(b) == -1
-    execute $'sbuffer {b}'
-  endif
-  # buffer-local 按键（仅在窗口可见时生效）
-  nnoremap <buffer> <CR> <ScriptCmd>SendCurrentLine()<CR>
-  nnoremap <buffer> y <ScriptCmd>AnswerPerm('allow_once')<CR>
-  nnoremap <buffer> n <ScriptCmd>AnswerPerm('reject_once')<CR>
-  normal! G
-enddef
-
-def SendCurrentLine()
-  # 延迟 import 避免循环依赖（session 已 import 本模块）
-  import autoload './session.vim'
-  var line = getline('.')
-  if line =~ '^\s*$' || line =~ '^\['
-    echom '请写一行不以 [ 开头的普通文本再按 <CR>'
+  var lines = getbufline(b, input_lnum + 1, '$')
+  # 保序 join：仅去首尾空白行，中间空行保留（spec：粘贴多行不失真）
+  var start = 0
+  while start < len(lines) && lines[start] =~# '^\s*$'
+    start += 1
+  endwhile
+  var last = len(lines) - 1
+  while last >= start && lines[last] =~# '^\s*$'
+    last -= 1
+  endwhile
+  if last < start
+    echom '输入区为空'
     return
   endif
-  ResetTurn()
-  session.SendPromptText(line)
+  var text = join(lines[start : last], "\n")
+  if text =~# '^\['
+    echom '输入以 [ 开头（历史区防线），整条拒绝'
+    return
+  endif
+  did_mark_thought = false
+  session.SendPromptText(text)
+  # 清空输入区（保留一行空行）
+  deletebufline(b, input_lnum + 1, '$')
+  appendbufline(b, '$', '')
+  var w = bufwinnr(b)
+  if w != -1
+    win_execute(w, $'normal! {input_lnum + 1}G')
+  endif
 enddef
 
-def AnswerPerm(optionId: string)
-  import autoload './session.vim'
-  session.PermAnswer(optionId)
+# ---------- 窗口布局（design D5） ----------
+
+def LayoutOf(arg: string): string
+  if arg ==# 'right' || arg ==# 'bottom'
+    return arg
+  endif
+  if exists('g:agent_shell_layout') && (g:agent_shell_layout ==# 'right' || g:agent_shell_layout ==# 'bottom')
+    return g:agent_shell_layout
+  endif
+  return 'bottom'
 enddef
 
-# ---------- M1 挂载点（design D6：预留不实现） ----------
-# 输入区：M1 将在聊天 buffer 尾部建立常驻可编辑输入区，
-# 届时 SendCurrentLine 由输入区 <CR> 取代。此函数为占位。
+export def Open(layout_arg: string = '')
+  var layout = LayoutOf(layout_arg)
+  var b = ChatBuf()
+  var win = bufwinnr(b)
+  if win == -1
+    # headless（-es）下 split 静默失败：bufwinnr 仍 -1，窗口分支自然跳过
+    if layout ==# 'right'
+      var w = exists('g:agent_shell_right_width') ? g:agent_shell_right_width : 46
+      # vim9 def 内 execute 'Nsplit' 的数字前缀会被当 range（E1050），
+      # 必须先 split 再 resize 两步（实证）
+      execute 'rightbelow vsplit'
+      execute $'vertical resize {w}'
+    else
+      var h = exists('g:agent_shell_bottom_height') ? g:agent_shell_bottom_height : 12
+      execute 'rightbelow split'
+      execute $'resize {h}'
+    endif
+    execute $'buffer {b}'
+    win = bufwinnr(b)
+  endif
+  if win != -1
+    SetupWindow(win)
+    win_execute(win, $'normal! {input_lnum + 1}G')
+  endif
+enddef
+
+def SetupWindow(win: number)
+  win_execute(win, 'setlocal foldmethod=marker')
+  win_execute(win, $'setlocal foldmarker={FOLD_OPEN},{FOLD_CLOSE}')
+  win_execute(win, 'setlocal foldlevel=1')
+  win_execute(win, 'setlocal statusline=%{agent_shell#render#StatusLine()}')
+  # buffer-local 按键：normal+insert 的 <CR>（design W5），y/n 权限
+  win_execute(win, 'nnoremap <buffer> <CR> <ScriptCmd>agent_shell#render#SendInput()<CR>')
+  win_execute(win, 'inoremap <buffer> <CR> <ScriptCmd>agent_shell#render#SendInput()<CR>')
+  win_execute(win, 'nnoremap <buffer> y <ScriptCmd>agent_shell#session#PermAnswer(''allow_once'')<CR>')
+  win_execute(win, 'nnoremap <buffer> n <ScriptCmd>agent_shell#session#PermAnswer(''reject_once'')<CR>')
+  SetupHighlight(win)
+enddef
+
+# ---------- 高亮（design D4） ----------
+
+def SetupHighlight(win: number)
+  if exists('g:agent_shell_highlight') && !g:agent_shell_highlight
+    return
+  endif
+  if win == -1
+    return  # 无窗口时跳过（syntax 需窗口上下文）
+  endif
+  var hl: list<string> = [
+    'You  Identifier', 'AI   String', 'TOOL Special', 'PLAN Statement',
+    'PERM WarningMsg', 'ERR  ErrorMsg', 'USE  Comment', 'CMD  Comment',
+    'ACP  Comment', 'Sep  NonText',
+  ]
+  win_execute(win, [
+    'syntax match AgentShellYou  "^\[你]"',
+    'syntax match AgentShellAI   "^\[AI]"',
+    'syntax match AgentShellTOOL "^\[TOOL]"',
+    'syntax match AgentShellPLAN "^\[PLAN]"',
+    'syntax match AgentShellPERM "^\[PERM]"',
+    'syntax match AgentShellERR  "^\[ERR]"',
+    'syntax match AgentShellUSE  "^\[USE]"',
+    'syntax match AgentShellCMD  "^\[CMD]"',
+    'syntax match AgentShellACP  "^\[ACP]"',
+    $'syntax match AgentShellSep  "^{SEPARATOR}"',
+  ])
+  for h in hl
+    execute 'highlight default link AgentShell' .. h
+  endfor
+enddef
+
+# ---------- busy（design D2；状态由 session 持有） ----------
+
+# statusline 表达式入口（export 注册 # 全局名供 %{...} 引用）
+export def StatusLine(): string
+  if session.IsBusy()
+    return BUSY_FRAMES[busy_frame_idx % len(BUSY_FRAMES)] .. ' agent working…'
+  endif
+  return 'agent-shell'
+enddef
+
+# session 在轮次起止时调用
+export def NotifyBusyChanged()
+  var b = bufnr(BUFNAME)
+  if b == -1
+    return
+  endif
+  if session.IsBusy()
+    if busy_timer == 0 && bufwinnr(b) != -1
+      busy_timer = timer_start(120, (t: number) => Tick(t), {repeat: -1})
+    endif
+  else
+    BusyTeardown()
+  endif
+enddef
+
+def BusyTeardown()
+  if busy_timer != 0
+    timer_stop(busy_timer)
+    busy_timer = 0
+  endif
+  var b = bufnr(BUFNAME)
+  var w = b == -1 ? -1 : bufwinnr(b)
+  if w != -1
+    win_execute(w, 'redrawstatus')
+  endif
+enddef
+
+# timer tick：自检自灭（design W2）
+def Tick(_: number)
+  var b = bufnr(BUFNAME)
+  if !session.IsBusy() || bufwinnr(b) == -1
+    BusyTeardown()
+    return
+  endif
+  busy_frame_idx += 1
+  var w = bufwinnr(b)
+  if w != -1
+    win_execute(w, 'redrawstatus')
+  endif
+enddef
+
+# 测试断言入口：当前帧字符
+export def BusyFrame(): string
+  return BUSY_FRAMES[busy_frame_idx % len(BUSY_FRAMES)]
+enddef
+
+# ---------- 挂载点 ----------
+
 export def OnInputArea()
-  # M1: 实现输入区渲染与键绑定
+  # M2+: 输入区高级特性（@补全挂载等）
 enddef
