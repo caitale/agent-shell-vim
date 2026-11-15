@@ -18,6 +18,8 @@ vim9script
 #   g:agent_shell_right_width  right 布局宽度（默认 46）
 #   g:agent_shell_bottom_height bottom 布局高度（默认 12）
 #   g:agent_shell_highlight    非 0 启用消息类型高亮（默认开启，0 关闭）
+#   g:agent_shell_diff_auto    非 0 时 edit 完成自动打开 vimdiff 审查（默认 0）
+#   g:agent_shell_diff_chain   非 0 时审查完自动跳下一待审查项（默认 0）
 
 # 踩坑规避（spike 实证）：命令定义一律 command! X call Func()，
 # 禁止 lambda 内联（静默 no-op）；命令名与函数名解耦（E117）。
@@ -26,8 +28,20 @@ vim9script
 import autoload '../autoload/agent_shell/session.vim'
 import autoload '../autoload/agent_shell/render.vim'
 import autoload '../autoload/agent_shell/presets.vim'
+import autoload '../autoload/agent_shell/diff.vim'
+
+def DiffStatusEcho()
+  for e in diff.Status()
+    echom $'[{e.state}] {e.path} ({e.status})'
+  endfor
+enddef
 
 command! -nargs=? -complete=custom,AgentShellPresetComp AgentStart call session.Start(<q-args>)
+command! -nargs=? AgentDiffReview call diff.Review(<q-args> != '' ? str2nr(<q-args>) : -1)
+command! AgentDiffAccept call diff.Accept()
+command! AgentDiffReject call diff.Reject()
+command! AgentDiffNext call diff.Next()
+command! AgentDiffStatus call DiffStatusEcho()
 command! AgentStop call session.Stop()
 command! -nargs=? AgentOpen call render.Open(<q-args>)
 command! -nargs=1 AgentSend call session.SendPromptText(<q-args>)

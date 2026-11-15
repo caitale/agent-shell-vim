@@ -29,6 +29,22 @@ Plug 'caitale/agent-shell-vim'
 :AgentStop
 ```
 
+## 改动审查（M2）
+
+agent 修改文件后，改动进入待审查队列，聊天中的 TOOL 折叠块显示状态标记（待审查 / ✓ / ✗）：
+
+```vim
+:AgentOpen            " 有新改动后，在 TOOL 折叠块上按 d 打开 vimdiff 审查
+                      "   审查 tab 内：]a 接受、]r 拒绝、]n 下一项
+:AgentDiffReview      " 打开第一个待审查项（或 :AgentDiffReview 2 指定序号）
+:AgentDiffAccept      " 接受：保持文件现状（agent 的修改生效）
+:AgentDiffReject      " 拒绝：文件恢复为改动前内容（校验一致才写回）
+:AgentDiffNext        " 跳到下一个待审查项
+:AgentDiffStatus      " 列出全部审查条目与状态
+```
+
+注意：拒绝是本地回滚，agent 上下文仍认为修改成功——请在其后的对话中告知它（聊天中也会有提示行）。文件在拒绝前若已被再次修改（与 newText 不一致），插件会拒绝写回并警告，转人工处理。
+
 历史区请勿手改（行以 `[` 开头受发送防线保护，改了只影响显示不影响协议）。
 
 ## 内置 preset
@@ -62,13 +78,15 @@ let g:agent_shell_agents = {
 | `g:agent_shell_right_width` | right 布局宽度（列） | 46 |
 | `g:agent_shell_bottom_height` | bottom 布局高度（行） | 12 |
 | `g:agent_shell_highlight` | 消息类型高亮开关 | 1 |
+| `g:agent_shell_diff_auto` | edit 完成自动打开 vimdiff 审查 | 0 |
+| `g:agent_shell_diff_chain` | 审查完自动跳下一待审查项 | 0 |
 
 UI 说明：轮次进行中聊天窗口状态行显示旋转 busy 指示；工具调用渲染为折叠块（自定义 marker `«as»`，`zo/zc` 开合）。
 
 ## 测试
 
 ```sh
-./t/run.sh        # headless 全链路（22 断言，零 token）
+./t/run.sh        # headless 全链路（33 断言，零 token）
 # 真实 agent 冒烟（手动，耗 token）：
 vim -Nu NONE -n -es -c 'let g:agent_shell_smoke = "claude"' -S t/smoke_real.vim -c 'qa!'
 ```
@@ -77,13 +95,13 @@ CI：GitHub Actions，Vim 9.1/9.2 矩阵（`.github/workflows/test.yml`）。
 
 ## Roadmap
 
-M0 骨架 ✅ → M1 聊天 + UI 基线 ✅（布局/输入区/busy/折叠/高亮）→ M2 diff 审查（vimdiff）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
+M0 骨架 ✅ → M1 聊天 + UI 基线 ✅ → M2 diff 审查 ✅（vimdiff/接受/拒绝）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
 
 ## 目录
 
 ```
 plugin/agent-shell.vim        入口：命令与配置
-autoload/agent_shell/         protocol / session / render / presets 四模块
+autoload/agent_shell/         protocol / session / render / presets / diff 五模块
 t/                            headless 测试 + mock 夹具 + 手动冒烟
 research/                     调研资料（spike、竞品分析、roadmap）
 openspec/                     spec 驱动开发的变更与规格

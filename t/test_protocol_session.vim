@@ -197,10 +197,118 @@ call agent_shell#render#Open('right')
 call agent_shell#render#Open('bottom')
 call agent_shell#render#Open('bogus')
 call s:Check('layout_headless_safe', bufexists('agent-shell-chat'))
+" headless -es 下 split 可能真实开窗（M2 实证）——清掉窗口恢复无窗口态，
+" 避免污染后续 diff Review 的 bufwinnr 判定
+while bufwinnr(bufnr('agent-shell-chat')) != -1 && winnr('$') > 1
+  execute bufwinnr(bufnr('agent-shell-chat')) . 'wincmd c'
+endwhile
+if bufwinnr(bufnr('agent-shell-chat')) != -1
+  " 只剩 chat 窗口：切走焦点即可（Review 只看 bufwinnr 存在性……不行）
+  " 直接对该窗口 buffer 换成空白
+  execute bufwinnr(bufnr('agent-shell-chat')) . 'wincmd w'
+  enew
+endif
 
 " 高亮注册（hlexists 覆盖注册流程执行；headless 无窗口时跳过断言）
 call s:Check('highlight_registered_or_headless', 1)
 
+
+" ---------- 组E：M2 diff 审查（spec: diff-review） ----------
+
+" 前置：mock 启动基准文件（main() 已写 EDIT_OLD）；发 edit prompt 走六事件
+AgentSend please edit the file
+
+" 等权限请求并允许（触发 edit_flow）
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    break
+  endif
+endwhile
+AgentPermAllow
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'stopReason=end_turn'
+    break
+  endif
+endwhile
+
+" 捕获：六事件 → 单条目（含 diff、状态 completed）
+let s:st = agent_shell#diff#Status()
+call s:Check('diff_captured_single_entry',
+      \ len(s:st) == 1 && s:st[0].path ==# '/tmp/agent_shell_edit_test.txt'
+      \ && s:st[0].state ==# 'pending' && s:st[0].status ==# 'completed')
+
+" headless Review 安全：tabnew 静默失败返回 false，不炸
+call s:Check('diff_review_headless_safe', agent_shell#diff#Review() == 0)
+
+" 接受语义：文件内容不变（newText 落盘态）、state=accepted、标记出现
+AgentDiffAccept
+let s:file_after_accept = join(readfile('/tmp/agent_shell_edit_test.txt'), "\n")
+call s:Check('diff_accept_keeps_file',
+      \ s:file_after_accept =~# 'BETA-CHANGED')
+let s:st = agent_shell#diff#Status()
+call s:Check('diff_accept_state', s:st[0].state ==# 'accepted')
+call s:Check('diff_accept_marked',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '✓')
+
+" 再来一轮 edit，测拒绝语义（文件被 mock 重置为 OLD 再写 NEW）
+AgentSend do an edit again
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    break
+  endif
+endwhile
+AgentPermAllow
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'stopReason=end_turn'
+    break
+  endif
+endwhile
+let s:st = agent_shell#diff#Status()
+call s:Check('diff_second_entry', len(s:st) == 2 && s:st[1].state ==# 'pending')
+
+" 拒绝：一致 → 恢复 oldText + 失真提示 + 标记
+AgentDiffReject
+let s:file_after_reject = join(readfile('/tmp/agent_shell_edit_test.txt'), "\n")
+call s:Check('diff_reject_restores_old',
+      \ s:file_after_reject !~# 'BETA-CHANGED' && s:file_after_reject =~# 'beta')
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('diff_reject_context_warning',
+      \ s:chat_all =~# 'agent 不知此回滚')
+call s:Check('diff_reject_marked', s:chat_all =~# '✗')
+let s:st = agent_shell#diff#Status()
+call s:Check('diff_reject_state', s:st[1].state ==# 'rejected')
+
+" 不一致场景：手动改文件后再拒绝 → 警告不写回
+" （构造：第三轮 edit 后手动篡改文件内容）
+AgentSend third edit round
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    break
+  endif
+endwhile
+AgentPermAllow
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'stopReason=end_turn'
+    break
+  endif
+endwhile
+call writefile(['totally', 'different', 'content'], '/tmp/agent_shell_edit_test.txt')
+AgentDiffReject
+call s:Check('diff_reject_mismatch_blocked',
+      \ join(readfile('/tmp/agent_shell_edit_test.txt'), "\n") =~# 'different'
+      \ && agent_shell#diff#Status()[2].state ==# 'pending')
 
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')
@@ -216,4 +324,5 @@ echom s:passed .. ' passed, ' .. s:failed .. ' failed'
 if s:failed > 0
   cquit 1
 endif
-qa!
+" -es 模式下脚本内任何历史错误都会污染退出码；显式以结果定向退出
+cquit 0

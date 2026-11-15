@@ -11,6 +11,7 @@ vim9script
 import autoload './protocol.vim'
 import autoload './render.vim'
 import autoload './presets.vim'
+import autoload './diff.vim'
 
 var session_id = ''
 var perm_id_pending = 0        # 挂起的权限请求 id（0 = 无）
@@ -167,6 +168,16 @@ def Dispatch(msg: dict<any>)
   endif
 enddef
 
+# update 分发：render 先渲染、diff 后入队打标（design tasks 1.2 定序）
+def HandleUpdate(params: any)
+  var upd = params->get('update', {})
+  var st = upd->get('sessionUpdate', '')
+  render.Update(upd)
+  if st ==# 'tool_call' || st ==# 'tool_call_update'
+    diff.OnToolEvent(upd)
+  endif
+enddef
+
 def HandleResponse(msg: dict<any>)
   var id = msg['id']
   if msg->has_key('error')
@@ -204,12 +215,6 @@ def BusyClear()
 enddef
 
 # ---------- update 处理（spec：acp-session「wire format 判别」） ----------
-
-def HandleUpdate(params: any)
-  # 实证 wire format：params.update.sessionUpdate 为判别字段
-  var upd = params->get('update', {})
-  render.Update(upd)
-enddef
 
 def HandlePermission(msg: dict<any>)
   perm_id_pending = msg['id']

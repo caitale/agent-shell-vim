@@ -5,11 +5,22 @@
   initialize → session/new → session/prompt（流式 session/update）
   并在轮次中途演示 session/request_permission（agent → client 反向请求）。
 
+prompt 含 "edit" 时走 edit 流程（M2 diff 审查夹具，wire 契约对齐
+claude-agent-acp 实测六事件序列）：
+  tool_call(pending) → tool_call_update(locations) → tool_call_update(rawInput)
+  → tool_call_update(content=[{type:'diff',...}]) → tool_call_update(completed)
+  且 python 侧同步将 newText 落盘（模拟真实 agent 行为）。
+
 不依赖任何真实 LLM，用于验证 ACP 客户端协议闭环。
 """
 import json
+import os
 import sys
 import uuid
+
+EDIT_TARGET = "/tmp/agent_shell_edit_test.txt"
+EDIT_OLD = "alpha\nbeta\ngamma\n"
+EDIT_NEW = "alpha\nBETA-CHANGED\ngamma\n"
 
 
 def send(obj):
@@ -32,7 +43,7 @@ class Agent:
         self.sid = None
         self.uid = 0
         # 挂起的轮次：等待 client 回复权限请求后继续
-        self.pending = None  # {"prompt_id":..., "perm_id":..., "stage":...}
+        self.pending = None  # {"prompt_id":..., "perm_id":..., "text":..., "edit":bool}
 
     # ---- helpers ----
     def chunk(self, session_update, content=None, **extra):
@@ -87,7 +98,10 @@ class Agent:
         ])
         # 3) 反向请求权限：agent → client，阻塞等待回复
         perm_id = 900 + self.uid
-        self.pending = {"prompt_id": prompt_id, "perm_id": perm_id, "text": text}
+        self.pending = {
+            "prompt_id": prompt_id, "perm_id": perm_id, "text": text,
+            "edit": "edit" in text.lower(),
+        }
         send({
             "jsonrpc": "2.0", "id": perm_id,
             "method": "session/request_permission",
@@ -111,15 +125,47 @@ class Agent:
             self.chunk("agent_message_chunk", {"type": "text", "text": "（权限被拒绝，任务中止）"})
             respond(p["prompt_id"], {"stopReason": "refusal"})
             return
-        # 4) 模拟工具调用
-        self.chunk("tool_call", toolCallId=f"tc{self.uid}", title="grep",
-                   kind="execute", status="pending", content={"type": "text", "text": "grep -rn TODO ."})
-        self.chunk("tool_call", toolCallId=f"tc{self.uid}", title="grep",
-                   kind="execute", status="completed", content={"type": "text", "text": "3 matches"})
+        if p["edit"]:
+            self.edit_flow()
+        else:
+            # 4) 模拟工具调用（grep 演示）
+            self.chunk("tool_call", toolCallId=f"tc{self.uid}", title="grep",
+                       kind="execute", status="pending", content={"type": "text", "text": "grep -rn TODO ."})
+            self.chunk("tool_call", toolCallId=f"tc{self.uid}", title="grep",
+                       kind="execute", status="completed", content={"type": "text", "text": "3 matches"})
         # 5) 流式回复（多 chunk 演示流式）
         for piece in (f"收到：「{p['text']}」。", "这是一段流式输出，", "由 mock-agent 分三个 chunk 发出。"):
             self.chunk("agent_message_chunk", {"type": "text", "text": piece})
         respond(p["prompt_id"], {"stopReason": "end_turn"})
+
+    # ---- edit 六事件流（wire 契约对齐 claude-agent-acp 实测，design「wire 契约」） ----
+    def edit_flow(self):
+        call_id = f"call_{uuid.uuid4().hex[:24]}"
+        # 事件 1：tool_call pending（title 无路径——实证）
+        self.chunk("tool_call", toolCallId=call_id, name="Edit", title="Edit",
+                   kind="edit", status="pending", content=[], locations=[])
+        # 事件 2：locations（路径首次出现）
+        self.chunk("tool_call_update", toolCallId=call_id,
+                   rawInput={"file_path": EDIT_TARGET},
+                   title=f"Edit {os.path.basename(EDIT_TARGET)}",
+                   locations=[{"path": EDIT_TARGET}])
+        # 事件 3：参数补全
+        self.chunk("tool_call_update", toolCallId=call_id,
+                   rawInput={"file_path": EDIT_TARGET, "new_string": "BETA-CHANGED"})
+        self.chunk("tool_call_update", toolCallId=call_id,
+                   rawInput={"file_path": EDIT_TARGET, "old_string": "beta", "new_string": "BETA-CHANGED"})
+        # 事件 4：结构化 diff（content[].type='diff'）
+        self.chunk("tool_call_update", toolCallId=call_id,
+                   rawInput={"replace_all": False, "file_path": EDIT_TARGET,
+                             "old_string": "beta", "new_string": "BETA-CHANGED"},
+                   content=[{"type": "diff", "path": EDIT_TARGET,
+                             "oldText": EDIT_OLD, "newText": EDIT_NEW}])
+        # 落盘模拟（真实 agent 行为：completed 前文件已写好）
+        with open(EDIT_TARGET, "w") as f:
+            f.write(EDIT_NEW)
+        # 事件 5/6：完成
+        self.chunk("tool_call_update", toolCallId=call_id, status="completed",
+                   rawOutput=f"The file {EDIT_TARGET} has been updated successfully.")
 
 
 def main():
@@ -129,6 +175,9 @@ def main():
     sys.stdout.write("\n")
     sys.stdout.write("noise-not-json\n")
     sys.stdout.flush()
+    # edit 夹具基准文件（测试断言的盘上初态；测试也可前置覆盖）
+    with open(EDIT_TARGET, "w") as f:
+        f.write(EDIT_OLD)
     for line in sys.stdin:
         line = line.strip()
         if not line:

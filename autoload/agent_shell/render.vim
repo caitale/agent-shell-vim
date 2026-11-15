@@ -97,6 +97,8 @@ enddef
 # ---------- update 渲染（逐类型行为，spec: acp-session + chat-ui） ----------
 
 var did_mark_thought = false
+# toolCallId → 折叠块摘要行号（diff 审查标记定位，design D5）
+var tool_blocks: dict<number> = {}
 
 export def Update(upd: any)
   var st = upd->get('sessionUpdate', '')
@@ -110,6 +112,8 @@ export def Update(upd: any)
     Log('PLAN', $'{first->get("content", "")} ({first->get("status", "")})')
   elseif st ==# 'tool_call'
     RenderToolCall(upd)
+  elseif st ==# 'tool_call_update'
+    RenderToolCallUpdate(upd)
   elseif st ==# 'available_commands_update'
     var cmds = upd->get('availableCommands', [])
     Log('CMD', $'可用斜杠命令 {len(cmds)} 个：' .. cmds->mapnew((_: number, c: any) => c->get('name', '?'))->join(' '))
@@ -145,6 +149,40 @@ def RenderToolCall(upd: dict<any>)
   endif
   add(rows, FOLD_CLOSE)
   LogLines(rows)
+  # 记录摘要行锚（LogLines 后行号=插入区首行-1-其余行……直接取：插入后摘要行=input_lnum-len(rows)）
+  var id = upd->get('toolCallId', '')
+  if id !=# ''
+    tool_blocks[id] = input_lnum - len(rows)
+  endif
+enddef
+
+# tool_call_update 渲染（M1 遗留修正）：title 演进/状态更新；diff content 追加展示
+def RenderToolCallUpdate(upd: dict<any>)
+  var id = upd->get('toolCallId', '')
+  var lnum = get(tool_blocks, id, 0)
+  if lnum == 0
+    return  # 对应块未渲染（理论少见）——静默
+  endif
+  var b = bufnr(BUFNAME)
+  var line = getbufline(b, lnum, lnum)->get(0, '')
+  if line ==# ''
+    return
+  endif
+  var title = upd->get('title', '')
+  var status = upd->get('status', '')
+  # 状态演进（completed/in_progress）重写摘要行尾
+  if status !=# ''
+    line = substitute(line, ': \zs[a-z_]*\ze \(' .. FOLD_OPEN .. '\|[ ✓✗（]\)', status, '')
+    if line !~# ': ' .. status
+      # 兜底：直接拼接
+      line = substitute(line, ': \zs.*\ze ' .. FOLD_OPEN, status, '')
+    endif
+  endif
+  # title 演进（"Edit" → "Edit probe.txt"）
+  if title !=# '' && line !~# title
+    line = substitute(line, '^▸ TOOL \zs[^:]*\ze:', title, '')
+  endif
+  setbufline(b, lnum, line)
 enddef
 
 def CompactUsage(upd: dict<any>): string
@@ -156,6 +194,31 @@ def CompactUsage(upd: dict<any>): string
     endif
   endfor
   return empty(parts) ? '(usage)' : parts->join(' ')
+enddef
+
+# diff 审查标记（design D5）：state ∈ reviewing|accepted|rejected|pending
+export def MarkToolCall(id: string, state: string)
+  var b = bufnr(BUFNAME)
+  var lnum = get(tool_blocks, id, 0)
+  if lnum == 0
+    return
+  endif
+  var line = getbufline(b, lnum, lnum)->get(0, '')
+  if line ==# ''
+    return
+  endif
+  # 清旧标记再追加新标记（标记位于摘要行尾、FOLD_OPEN 之前）
+  line = substitute(line, ' *（待审查）', '', '')
+  line = substitute(line, ' * ✓', '', '')
+  line = substitute(line, ' * ✗', '', '')
+  var mark = state ==# 'accepted' ? ' ✓' : state ==# 'rejected' ? ' ✗' : state ==# 'reviewing' ? '（审查中）' : '（待审查）'
+  var pos = stridx(line, ' ' .. FOLD_OPEN)
+  if pos > 0
+    line = strpart(line, 0, pos) .. mark .. strpart(line, pos)
+  else
+    line = line .. mark
+  endif
+  setbufline(b, lnum, line)
 enddef
 
 # ---------- 输入区发送（export：映射与测试共用入口，design W7） ----------
@@ -240,6 +303,7 @@ def SetupWindow(win: number)
   win_execute(win, 'inoremap <buffer> <CR> <ScriptCmd>agent_shell#render#SendInput()<CR>')
   win_execute(win, 'nnoremap <buffer> y <ScriptCmd>agent_shell#session#PermAnswer(''allow_once'')<CR>')
   win_execute(win, 'nnoremap <buffer> n <ScriptCmd>agent_shell#session#PermAnswer(''reject_once'')<CR>')
+  win_execute(win, 'nnoremap <buffer> d <ScriptCmd>agent_shell#diff#Review()<CR>')
   SetupHighlight(win)
 enddef
 
