@@ -99,6 +99,8 @@ enddef
 var did_mark_thought = false
 # toolCallId → 折叠块摘要行号（diff 审查标记定位，design D5）
 var tool_blocks: dict<number> = {}
+# toolCallId → {title, status, mark}：摘要行结构化重建的真源（避免正则摘放）
+var tool_meta: dict<dict<any>> = {}
 
 export def Update(upd: any)
   var st = upd->get('sessionUpdate', '')
@@ -153,6 +155,7 @@ def RenderToolCall(upd: dict<any>)
   var id = upd->get('toolCallId', '')
   if id !=# ''
     tool_blocks[id] = input_lnum - len(rows)
+    tool_meta[id] = {title: title, status: status, mark: ''}
   endif
 enddef
 
@@ -160,29 +163,23 @@ enddef
 def RenderToolCallUpdate(upd: dict<any>)
   var id = upd->get('toolCallId', '')
   var lnum = get(tool_blocks, id, 0)
-  if lnum == 0
-    return  # 对应块未渲染（理论少见）——静默
+  var meta = get(tool_meta, id, {})
+  if lnum == 0 || empty(meta)
+    return  # 对应块未渲染——静默
   endif
+  # 合并演进字段（title/status 更新；mark 保留既有）
+  var t = upd->get('title', '')
+  if t !=# ''
+    meta['title'] = t
+  endif
+  var st = upd->get('status', '')
+  if st !=# ''
+    meta['status'] = st
+  endif
+  tool_meta[id] = meta
+  # 结构化重建摘要行（验证报告 W-1 连带修复：正则摘放标记的路径全部废除）
   var b = bufnr(BUFNAME)
-  var line = getbufline(b, lnum, lnum)->get(0, '')
-  if line ==# ''
-    return
-  endif
-  var title = upd->get('title', '')
-  var status = upd->get('status', '')
-  # 状态演进（completed/in_progress）重写摘要行尾
-  if status !=# ''
-    line = substitute(line, ': \zs[a-z_]*\ze \(' .. FOLD_OPEN .. '\|[ ✓✗（]\)', status, '')
-    if line !~# ': ' .. status
-      # 兜底：直接拼接
-      line = substitute(line, ': \zs.*\ze ' .. FOLD_OPEN, status, '')
-    endif
-  endif
-  # title 演进（"Edit" → "Edit probe.txt"）
-  if title !=# '' && line !~# title
-    line = substitute(line, '^▸ TOOL \zs[^:]*\ze:', title, '')
-  endif
-  setbufline(b, lnum, line)
+  setbufline(b, lnum, $'▸ TOOL {meta["title"]}: {meta["status"]}{meta["mark"]} {FOLD_OPEN}1')
 enddef
 
 def CompactUsage(upd: dict<any>): string
@@ -200,25 +197,14 @@ enddef
 export def MarkToolCall(id: string, state: string)
   var b = bufnr(BUFNAME)
   var lnum = get(tool_blocks, id, 0)
-  if lnum == 0
+  var meta = get(tool_meta, id, {})
+  if lnum == 0 || empty(meta)
     return
   endif
-  var line = getbufline(b, lnum, lnum)->get(0, '')
-  if line ==# ''
-    return
-  endif
-  # 清旧标记再追加新标记（标记位于摘要行尾、FOLD_OPEN 之前）
-  line = substitute(line, ' *（待审查）', '', '')
-  line = substitute(line, ' * ✓', '', '')
-  line = substitute(line, ' * ✗', '', '')
   var mark = state ==# 'accepted' ? ' ✓' : state ==# 'rejected' ? ' ✗' : state ==# 'reviewing' ? '（审查中）' : '（待审查）'
-  var pos = stridx(line, ' ' .. FOLD_OPEN)
-  if pos > 0
-    line = strpart(line, 0, pos) .. mark .. strpart(line, pos)
-  else
-    line = line .. mark
-  endif
-  setbufline(b, lnum, line)
+  meta['mark'] = mark
+  tool_meta[id] = meta
+  setbufline(b, lnum, $'▸ TOOL {meta["title"]}: {meta["status"]}{meta["mark"]} {FOLD_OPEN}1')
 enddef
 
 # ---------- 输入区发送（export：映射与测试共用入口，design W7） ----------

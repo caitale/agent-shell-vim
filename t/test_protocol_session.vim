@@ -310,6 +310,20 @@ call s:Check('diff_reject_mismatch_blocked',
       \ join(readfile('/tmp/agent_shell_edit_test.txt'), "\n") =~# 'different'
       \ && agent_shell#diff#Status()[2].state ==# 'pending')
 
+" Next 命令最小覆盖：多条目状态下安全执行且队列状态不变（headless 无视图路径）
+AgentDiffNext
+call s:Check('diff_next_headless_safe',
+      \ len(agent_shell#diff#Status()) == 3
+      \ && agent_shell#diff#Status()[2].state ==# 'pending')
+" 空 oldText 场景：构造空 old 条目拒绝 → 警告不删除
+call writefile(['exists'], '/tmp/agent_shell_empty_old.txt')
+call agent_shell#diff#OnToolEvent({'sessionUpdate': 'tool_call', 'toolCallId': 'empty-1', 'kind': 'write', 'status': 'pending', 'content': [], 'locations': []})
+call agent_shell#diff#OnToolEvent({'sessionUpdate': 'tool_call_update', 'toolCallId': 'empty-1', 'locations': [{'path': '/tmp/agent_shell_empty_old.txt'}], 'content': [{'type': 'diff', 'path': '/tmp/agent_shell_empty_old.txt', 'oldText': '', 'newText': 'exists'}], 'status': 'completed'})
+AgentDiffReject
+call s:Check('diff_empty_old_not_deleted',
+      \ filereadable('/tmp/agent_shell_empty_old.txt')
+      \ && agent_shell#diff#Status()[3].state ==# 'pending')
+
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')
 

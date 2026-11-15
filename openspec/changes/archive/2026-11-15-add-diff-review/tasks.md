@@ -37,3 +37,4 @@
 - [x] 6.1 README：审查工作流章节（d 键/命令/语义/配置）、命令表与配置表补全
 - [x] 6.2 openspec validate + spec 场景核对（自动断言映射 + 手动清单：vimdiff 视觉/映射/回跳/自动弹出）
 - [x] 6.3 提交 → archive
+- [x] 6.4 （归档后补充）verify-after-archive：三维验证 PASS with warnings，W-1/W-4 已修，勘误见 ERRATA.md

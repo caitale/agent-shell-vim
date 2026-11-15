@@ -91,6 +91,8 @@ export def OnToolEvent(upd: dict<any>)
     if entry['kind'] ==# 'edit' || entry['kind'] ==# 'write' || has_diff
       if entry['path'] !=# '' || has_diff
         add(pending, entry)
+        # spec R4「入队时待审查」+ design D5：初始标记（验证报告 W-1 补）
+        render.MarkToolCall(id, 'pending')
       endif
     endif
     # 其余（execute/read 且无 diff）：不入队（render 照常渲染）
