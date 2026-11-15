@@ -10,7 +10,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        vim-version: ['9.1', '9.2']
+        # vim/vim tag 格式：v9.1.0000 式（patch 必须 4 位）；
+        # 'v9.1' 简写在 action-setup-vim 会报 tag 格式错（CI 首跑实证）
+        # 快照 tag：各分支最新 patch（0000 不是真实 tag，用各版本首个 4 位 patch）
+        vim-version: ['v9.1.0000', 'v9.2.0000']
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
