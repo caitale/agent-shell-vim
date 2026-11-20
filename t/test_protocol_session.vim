@@ -21,6 +21,10 @@ call writefile([], '/tmp/agent_shell_test_result.txt')
 let s:root = fnamemodify(expand('<sfile>:p'), ':h:h')
 execute 'set rtp^=' .. s:root
 execute 'source ' .. s:root . '/plugin/agent-shell.vim'
+" verify W(D5)：登记表隔离必须在一切 Register 之前（组A 握手即会登记）
+let g:agent_shell_registry_path = '/tmp/agent_shell_test_registry.json'
+call writefile([], '/tmp/agent_shell_test_registry.json')
+call agent_shell#sessions#ResetForTest()
 
 " ---------- 组A：preset 解析（spec: agent-presets，tasks 5.3） ----------
 
@@ -323,6 +327,156 @@ AgentDiffReject
 call s:Check('diff_empty_old_not_deleted',
       \ filereadable('/tmp/agent_shell_empty_old.txt')
       \ && agent_shell#diff#Status()[3].state ==# 'pending')
+
+" ---------- 组F：M3 会话管理（spec: session-management） ----------
+" （登记表隔离已前移文件头——verify W(D5)；此处仅重置内存态供空表场景）
+call agent_shell#sessions#ResetForTest()
+
+" busy 守卫：hello 轮 busy 期间 load 被拒（利用组B后某轮 busy 状态难构造——
+" 改为直接在无 agent 时测守卫外路径，busy 用 dryrun 轮验证太绕，
+" 简化：发一条 prompt 立即 load（busy 窗口内）
+AgentSend busy-guard-probe
+AgentSessionLoad
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_busy_guard', s:chat_all =~# '轮次进行中')
+" 等该轮走完（权限+答复）
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    break
+  endif
+endwhile
+AgentPermAllow
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'stopReason=end_turn'
+    break
+  endif
+endwhile
+
+" 序号无效（列表为空时）
+AgentSessionLoad 99
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_invalid_number', s:chat_all =~# '序号无效')
+
+" Stop 后：空登记表无参 load 提示 + list 提示
+AgentStop
+AgentSessionLoad
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_empty_registry_hint', s:chat_all =~# '登记表为空')
+AgentSessionList
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_list_requires_agent', s:chat_all =~# 'agent 未启动')
+
+" 重启 mock → list 渲染两条
+AgentStart
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'session 建立成功'
+    break
+  endif
+endwhile
+AgentSessionList
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+  if s:chat_all =~# '可恢复的会话'
+    break
+  endif
+endwhile
+call s:Check('sess_list_rendered',
+      \ s:chat_all =~# '\[SESS\] 1. 可恢复的会话' && s:chat_all =~# '\[SESS\] 2. 已过期会话')
+
+" load 成功：sessionId 替换 + 恢复行 + mock 确认消息
+let s:sid_before = agent_shell#session#SessionId()
+AgentSessionLoad 1
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '已恢复 mock 会话'
+    break
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_load_success',
+      \ agent_shell#session#SessionId() ==# 'sess_mock_known'
+      \ && s:chat_all =~# '已恢复会话：可恢复的会话'  " verify C-1：title 真实恢复
+      \ && s:chat_all =~# '已恢复 mock 会话')
+
+" load 失败（expired 条目）：错误 + sessionId 不变
+AgentSessionLoad 2
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'session/load 失败'
+    break
+  endif
+endwhile
+call s:Check('sess_load_expired_keeps',
+      \ agent_shell#session#SessionId() ==# 'sess_mock_known')
+
+" AgentSessionNew：sessionId 变化 + 新会话标记
+AgentSessionNew
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '新会话'
+    break
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_new_session',
+      \ agent_shell#session#SessionId() !=# 'sess_mock_known'
+      \ && s:chat_all =~# '── 新会话 ──')
+
+" AgentSessionCurrent：含 sessionId
+AgentSessionCurrent
+call s:Check('sess_current_shows',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'session=sess_')
+
+" 登记表持久化：Registry 含 known 条目；文件存在且可读回
+let s:reg = agent_shell#sessions#Registry()
+let s:reg_ok = 0
+for e in s:reg
+  if e.sessionId ==# 'sess_mock_known'
+    let s:reg_ok = 1
+    break
+  endif
+endfor
+call s:Check('sess_registry_has_known', s:reg_ok)
+call s:Check('sess_registry_file', filereadable('/tmp/agent_shell_test_registry.json')
+      \ && join(readfile('/tmp/agent_shell_test_registry.json'), '') =~# 'sess_mock_known')
+
+" C-3：自动启动链端到端——登记一条可载条目 → Stop → 无参 load →
+" 自动按 preset 启动 + 握手 + load 成功
+call agent_shell#sessions#Register('mock', 'sess_mock_known', '自动启动链测试', '/tmp')
+AgentStop
+AgentSessionLoad
+" 等待锚点用本轮独有 title（历史 chat 已含'已恢复 mock 会话'，旧锚会假 break）
+let s:deadline = localtime() + 8
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '已恢复会话：自动启动链测试'
+    break
+  endif
+endwhile
+sleep 300m
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_auto_start_chain',
+      \ s:chat_all =~# '自动启动' && s:chat_all =~# '已恢复会话：自动启动链测试'
+      \ && agent_shell#session#SessionId() ==# 'sess_mock_known')
+
+" C-3b：preset 失效——登记指向不存在的 preset → 提示 + 不发 load
+call agent_shell#sessions#Register('ghost-preset', 'sess_x', '幽灵', '/tmp')
+AgentStop
+AgentSessionLoad
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('sess_preset_missing',
+      \ s:chat_all =~# '已不存在' && agent_shell#session#SessionId() ==# '')
 
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')

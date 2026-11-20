@@ -7,6 +7,11 @@ cd "$(dirname "$0")/.."   # 仓库根
 echo "== agent-shell test (vim: $(vim --version | head -1 | cut -d' ' -f-2)) =="
 rm -f /tmp/agent_shell_test_result.txt
 vim -Nu NONE -n -es -S t/test_protocol_session.vim -c 'qa!' || true
+# M3：MOCK_SESS_MODE 子进程场景（empty/paged 各一个 vim 进程）
+for MODE in empty paged; do
+  MOCK_SESS_MODE=$MODE vim -Nu NONE -n -es -S t/test_sess_modes.vim -c 'qa!' || true
+  cat /tmp/agent_shell_sess_mode_result.txt >> /tmp/agent_shell_test_result.txt 2>/dev/null
+done
 echo "---- results ----"
 cat /tmp/agent_shell_test_result.txt
 if grep -q FAIL /tmp/agent_shell_test_result.txt; then

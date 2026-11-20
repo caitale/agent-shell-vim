@@ -82,6 +82,10 @@ class Agent:
             self.run_turn(rid, params)
         elif method == "session/cancel":
             respond(rid, {})
+        elif method == "session/list":
+            self.handle_list(rid, params)
+        elif method == "session/load":
+            self.handle_load(rid, params)
         else:
             respond(rid, error={"code": -32601, "message": f"unknown method: {method}"})
 
@@ -137,6 +141,44 @@ class Agent:
         for piece in (f"收到：「{p['text']}」。", "这是一段流式输出，", "由 mock-agent 分三个 chunk 发出。"):
             self.chunk("agent_message_chunk", {"type": "text", "text": piece})
         respond(p["prompt_id"], {"stopReason": "end_turn"})
+
+    # ---- M3 会话管理夹具（契约对齐两桥实测） ----
+    def handle_list(self, rid, params):
+        mode = os.environ.get("MOCK_SESS_MODE", "")
+        if mode == "empty":
+            respond(rid, {"sessions": [], "nextCursor": None})
+            return
+        if mode == "paged":
+            # 两页：首页 1 条 + cursor；带 cursor 参数的请求 → 次页 + null
+            if params.get("cursor"):
+                respond(rid, {"sessions": [self._sess("sess_mock_p2", "第二页会话")], "nextCursor": None})
+            else:
+                respond(rid, {"sessions": [self._sess("sess_mock_known", "分页第一条")], "nextCursor": "page2"})
+            return
+        respond(rid, {
+            "sessions": [
+                self._sess("sess_mock_known", "可恢复的会话"),
+                self._sess("sess_mock_expired", "已过期会话"),
+            ],
+            "nextCursor": None,
+        })
+
+    def _sess(self, sid, title):
+        return {
+            "sessionId": sid,
+            "cwd": "/tmp",
+            "title": title,
+            "updatedAt": "2026-11-20T10:00:00.000Z",
+        }
+
+    def handle_load(self, rid, params):
+        sid = params.get("sessionId", "")
+        if sid == "sess_mock_known":
+            self.sid = sid  # N8：夹具 wire 保真（后续 chunk 携带新 sid）
+            respond(rid, {"sessionId": sid, "modes": {}})
+            self.chunk("agent_message_chunk", {"type": "text", "text": "已恢复 mock 会话"})
+        else:
+            respond(rid, error={"code": -32602, "message": f"session not found: {sid}"})
 
     # ---- edit 六事件流（wire 契约对齐 claude-agent-acp 实测，design「wire 契约」） ----
     def edit_flow(self):
