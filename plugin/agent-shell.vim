@@ -34,6 +34,7 @@ import autoload '../autoload/agent_shell/presets.vim'
 import autoload '../autoload/agent_shell/diff.vim'
 import autoload '../autoload/agent_shell/sessions.vim'
 import autoload '../autoload/agent_shell/complete.vim'
+import autoload '../autoload/agent_shell/replay.vim'
 
 def DiffStatusEcho()
   for e in diff.Status()
@@ -62,6 +63,7 @@ command! -nargs=? AgentMode call sessions.ModeDispatch(<q-args>)
 command! AgentConfig call session.ShowConfig()
 command! -nargs=1 AgentImage call session.AttachImage(<q-args>)
 command! -nargs=? AgentSteer call sessions.SteerDispatch(<q-args>)
+command! -nargs=1 AgentReplay call replay.RunAndReport(expand(<q-args>))
 
 # preset 名补全（转发到 presets 模块；解耦命名避免 E117）
 def g:AgentShellPresetComp(arglead: string, _1: string, _2: number): string

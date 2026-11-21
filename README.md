@@ -137,7 +137,9 @@ UI 说明：轮次进行中聊天窗口状态行显示旋转 busy 指示；工�
 ## 测试
 
 ```sh
-./t/run.sh        # headless 全链路（86 断言，零 token）
+./t/run.sh        # headless 全链路（100 断言，零 token）
+
+traffic 回放（M5-b）：`t/replay/` 里的真实流量样本（claude/pi 录制）经 `:AgentReplay <file>` 回放驱动全解析链——mock 夹具验证"契约被正确建模"，回放验证"契约本身没被误读"（两者互补）。录制指南见 `t/replay/README.md`。
 # 真实 agent 冒烟（手动，耗 token）：
 vim -Nu NONE -n -es -c 'let g:agent_shell_smoke = "claude"' -S t/smoke_real.vim -c 'qa!'
 ```
@@ -146,7 +148,7 @@ CI：GitHub Actions，Vim 9.1/9.2 矩阵（`.github/workflows/test.yml`）。
 
 ## Roadmap
 
-M0–M4 ✅ → M5 差异化进行中：steering ✅（M-CR 转向/三桥自适应）→ 待做 traffic 回放/popup 预览→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
+M0–M4 ✅ → M5 差异化：steering ✅ + traffic 回放 ✅（真实流量零 token 回归）→ 待做 popup 预览→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
 
 ## 目录
 

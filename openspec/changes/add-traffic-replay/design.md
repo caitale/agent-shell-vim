@@ -62,9 +62,7 @@ export def RunAndReport(file: string)     # Run + render.Log 统计行（:AgentR
 
 主测试新组（组I）：**插入点写死——组H H4 之后、chat dump 之前**（W4：现文件尾部是 dump → AgentStop → send_after_stop 断言，组I 必须在 dump 前；回放残留的 busy/perm 由其后既有 AgentStop 收口）。
 
-**B3 锚点两件套（防历史行假匹配——M5-a 教训）**：
-- 每条断言前记行数锚 `let s:anchor = len(getbufline(b,1,'$'))`，断言只匹配 `getbufline(b, s:anchor+1, '$')` 新增区
-- 跨区断言用全 buffer 唯一特征串：claude sid 前缀（d06bf67b）、`pong`（mock 从不回）、统计行 `replayed=`
+**锚点策略（实施修正——原 B3 行数锚两件套被实证推翻）**：render.Log 是插入式写入（历史行插到 `── input ──` 分隔线上方），len-anchor 取 `anchor+1..$` 会拿到分隔线/空行而非新增历史行。改用**全 buffer 唯一特征串**：claude sid 前缀（d06bf67b）、`pong`（mock 从不回）、`replayed=14` 统计行——在组I 时刻全 buffer 唯一或首现于组I。missing-file 断言用 replay 专属路径串防历史假匹配。
 
 断言清单：
 - `replay_claude_full`：Run('t/replay/claude-full.jsonl') → replayed==14 && skipped_client==3 && bad==0；新增区含 stopReason=end_turn、[AI] 行含 pong、`replayed=14` 统计行（RunAndReport 路径）

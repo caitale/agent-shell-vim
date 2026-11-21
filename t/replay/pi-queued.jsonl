@@ -1,0 +1,15 @@
+# source: pi-acp (real, geohar bridge), recorded 2026-11-21, scenario: server-side queueing (mid-turn prompt queued by bridge)
+# excerpt: non-contiguous, causal order preserved (full dump: research/steering-probe/steer_pi.jsonl, 162 lines)
+# note: initialize/new responses intentionally excluded (avoid Register/ParseModes handshake side-effects)
+# sanitized: checked - no credentials
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Queued message (position 1)."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"28"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"29\n30"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Starting queued message. (0 remaining)"}}}}
+{"jsonrpc":"2.0","id":10,"result":{"stopReason":"end_turn"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"SECOND"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-T"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"URN"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a1fd43-ef95-72cf-b54d-dc346df00b8a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OK"}}}}
+{"jsonrpc":"2.0","id":11,"result":{"stopReason":"end_turn"}}

@@ -10,7 +10,7 @@
 
 回放模块加载 dump 文件，按方向判别逐条分发，agent→client 方向的消息驱动完整解析链，全程零进程、零 RPC。
 
-#### Scenario: 方向判别三规则
+#### Scenario: 方向判别五规则
 
 - **WHEN** 回放器读取一行 JSONL
 - **THEN** 按 shape 判别：`method+id` 且 method ∈ 客户端方法白名单 → 跳过（client 请求）；`method` 无 id → 回放（agent 通知）；`id+result/error` → 回放（agent 响应）；`method+id` 且 method = `session/request_permission` → 回放（服务端请求）；`method+id` 且 method 不在白名单 → 计入 bad（提示同步白名单——协议面扩大防静默漏放）

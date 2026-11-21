@@ -18,9 +18,10 @@ export def FilesFor(prefix: string): list<dict<any>>
   var cwd = getcwd()
   if prefix ==# ''
     # 无前缀：一层目录概览（不递归——N2）
-    for e in split(globpath(cwd, '*', 1, 1), "\n")
+    for e in globpath(cwd, '*', 0, 1)
       var rel = fnamemodify(e, ':.')
-      if rel !~ '^\.'  # 隐藏项跳过
+      # 隐藏项跳过（独立成行——表达式行内 # 注释会截断）
+      if rel !~ '^\.'
         add(out, {
           word: rel,
           menu: isdirectory(e) ? '[dir]' : fnamemodify(e, ':e'),
@@ -34,8 +35,8 @@ export def FilesFor(prefix: string): list<dict<any>>
   else
     # 有前缀：递归 glob（前缀目录内）
     var dir = fnamemodify(prefix, ':h')
-    var pat = dir ==# '.' || dir ==# prefix ? prefix . '**' : dir . '/**'
-    for e in split(globpath(cwd, pat, 0, 1), "\n")
+    var pat = dir ==# '.' || dir ==# prefix ? prefix .. '**' : dir .. '/**'
+    for e in globpath(cwd, pat, 0, 1)
       var rel = fnamemodify(e, ':.')
       if rel =~ '^\.'
         continue

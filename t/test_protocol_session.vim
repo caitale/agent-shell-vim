@@ -404,7 +404,7 @@ endwhile
 let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
 call s:Check('sess_load_success',
       \ agent_shell#session#SessionId() ==# 'sess_mock_known'
-      \ && s:chat_all =~# '已恢复会话：可恢复的会话'  " verify C-1：title 真实恢复
+      \ && s:chat_all =~# '已恢复会话：可恢复的会话'
       \ && s:chat_all =~# '已恢复 mock 会话')
 
 " load 失败（expired 条目）：错误 + sessionId 不变
@@ -862,6 +862,59 @@ call agent_shell#sessions#SteerDispatch('')
 call s:Check('steer_dispatch_no_e117', 1)
 
 " H5 startedNewTurn（MOCK_STEER=new_turn 子进程场景——见 t/test_steer_modes.vim 挂 run.sh）
+
+" ---------- 组I：M5-b traffic 回放（spec: traffic-replay） ----------
+" 锚点策略（实现期修正）：render.Log 是插入式写入（历史行插分隔线上方），
+" len-anchor 会取到分隔线/空行——改用全 buffer 唯一特征串（pong/d06bf67b/
+" replayed=14/Queued message 在组I 时刻全 buffer 唯一或首现于组I）
+
+" I1 claude 全链路：14/3/0 + 锚点
+let s:rst = agent_shell#replay#RunAndReport('t/replay/claude-full.jsonl')
+call s:Check('replay_claude_full',
+      \ s:rst['replayed'] == 14 && s:rst['skipped_client'] == 3 && s:rst['bad'] == 0)
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+" claude sid 全 buffer 唯一；pong 与统计行首现于组I（勿加行内注释——legacy 续行内 " 会 E116 静默吞断言）
+call s:Check('replay_claude_anchors',
+      \ s:chat_all =~# 'd06bf67b'
+      \ && s:chat_all =~# '\[AI\] pong'
+      \ && s:chat_all =~# 'replayed=14')
+
+" I2 usage 总量口径（usage_update 仅 used——ShowUsage 走总量分支）
+call agent_shell#session#ShowUsage()
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('replay_usage_total',
+      \ s:chat_all =~# '累计 total=27216' && s:chat_all =~# '总量口径')
+
+" I3 pi 排队：replayed==11 + Queued/Starting 回显
+let s:rst = agent_shell#replay#RunAndReport('t/replay/pi-queued.jsonl')
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('replay_pi_queued',
+      \ s:rst['replayed'] == 11 && s:rst['bad'] == 0)
+call s:Check('replay_pi_queued_echo',
+      \ s:chat_all =~# 'Queued message (position 1)' && s:chat_all =~# 'Starting queued message')
+
+" I4 registry 不增（独立二次回放——首次已 Register，二次 LRU 去重只更新）
+let s:reg_before = len(agent_shell#sessions#Registry())
+call agent_shell#replay#Run('t/replay/claude-full.jsonl')
+call s:Check('replay_registry_clean',
+      \ len(agent_shell#sessions#Registry()) == s:reg_before)
+
+" I5 missing file：全 buffer 提示（该串组G 出现过 image 版'文件不存在：/tmp/as_nonexistent.png'
+" ——此处匹配 replay 专属路径串）
+call agent_shell#replay#RunAndReport('/tmp/as_nonexistent_replay.jsonl')
+call s:Check('replay_missing_file',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '文件不存在：/tmp/as_nonexistent_replay')
+
+" I6 bad lines 容忍：坏文件 bad==2&&replayed==0；合法通知单文件 replayed==1+渲染
+call writefile(['{corrupted!!', 'not json at all'], '/tmp/as_replay_bad.jsonl')
+call writefile(['{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"replay-ok-chunk"}}}}'], '/tmp/as_replay_bad2.jsonl')
+let s:rst_bad = agent_shell#replay#Run('/tmp/as_replay_bad.jsonl')
+call s:Check('replay_bad_lines',
+      \ s:rst_bad['bad'] == 2 && s:rst_bad['replayed'] == 0)
+let s:rst_ok = agent_shell#replay#Run('/tmp/as_replay_bad2.jsonl')
+call s:Check('replay_single_notify',
+      \ s:rst_ok['replayed'] == 1
+      \ && join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'replay-ok-chunk')
 
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')

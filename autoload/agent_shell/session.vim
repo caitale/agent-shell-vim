@@ -352,7 +352,9 @@ def OnLine(line: string)
   endtry
 enddef
 
-def Dispatch(msg: dict<any>)
+# 回放/测试专用入口（add-traffic-replay D2）：正常流程经 protocol 回调；
+# export 后 autoload 自动注册 agent_shell#session#Dispatch 全局名
+export def Dispatch(msg: dict<any>)
   if msg->has_key('method')
     if msg['method'] ==# 'session/update'
       HandleUpdate(msg['params'])
