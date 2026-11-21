@@ -33,6 +33,25 @@ var pending_load: dict<any> = {}  # M3：自动启动链挂起的 load 目标（
 var loading_entry: dict<any> = {} # M3：当前 load 的目标条目（LoadEntry 设置，响应清除——verify C-1）
 var load_from_registry = false   # 当前 load 是否来自登记表路径（含自动启动链）
 
+# M4：补全数据源（available_commands_update 缓存）
+var avail_cmds: list<dict<any>> = []
+# M4：usage 累计（B2 统一：标准字段分别累计；used 走总量降级口径）
+var usage_in = 0
+var usage_out = 0
+var usage_total = 0
+var last_usage: dict<any> = {}
+# M4：prompt 队列（B1/W2：元素=完整 blocks 快照 + sid 快照）
+var queue: list<dict<any>> = []
+var dequeue_timer = 0
+# M4：图片附件槽
+var pending_image: dict<any> = {}  # {path, b64, mime}
+# M4：模式与配置（握手 new 与 load 双处解析——2026-11-20 实测 load 也返回 modes）
+var modes_list: list<dict<any>> = []
+var cur_mode = ''
+var config_opts: list<dict<any>> = []
+var id_set_mode = 0
+var last_set_mode = ''
+
 export def Running(): bool
   return protocol.Running()
 enddef
@@ -51,6 +70,28 @@ enddef
 
 export def CurrentPreset(): string
   return current_preset
+enddef
+
+# M4 查询面
+export def AvailableCommands(): list<dict<any>>
+  return copy(avail_cmds)
+enddef
+
+export def UsageBrief(): string
+  if usage_in > 0 || usage_out > 0
+    return $' ⇅{usage_in}/{usage_out}'
+  elseif usage_total > 0
+    return $' Σ{usage_total}'
+  endif
+  return ''
+enddef
+
+export def QueueDepth(): number
+  return len(queue)
+enddef
+
+export def PendingImage(): dict<any>
+  return copy(pending_image)
 enddef
 
 # ---------- 启动 / 停止 ----------
@@ -110,6 +151,7 @@ export def Stop()
   perm_id_pending = 0
   pending_load = {}
   loading_entry = {}
+  ResetSessionState()
   # M3（W5）：清列表数据，防 A 家 sessionId 塞给 B 家
   sessions.ClearListEntries()
   if busy
@@ -150,15 +192,80 @@ export def SendPromptText(text: string)
   if !EnsureReady()
     return
   endif
+  # M4 组包：text?（空文本且有图→仅 image block）+ 挂起图片
+  var blocks: list<dict<any>> = []
+  if text !=# ''
+    add(blocks, {type: 'text', text: text})
+  endif
+  if !empty(pending_image)
+    add(blocks, {type: 'image', data: pending_image['b64'], mimeType: pending_image['mime']})
+    var img = pending_image
+    pending_image = {}
+    render.Log('IMG', $'附件已发送：{img["path"]}（{len(img["b64"])} chars）')
+  endif
+  if empty(blocks)
+    return
+  endif
+  if busy
+    Enqueue(blocks)
+    return
+  endif
+  FirePrompt(blocks)
+enddef
+
+def FirePrompt(blocks: list<dict<any>>)
   busy = true
   render.NotifyBusyChanged()
   SendRaw({
     jsonrpc: '2.0', id: protocol.NextId(), method: 'session/prompt',
-    params: {
-      sessionId: session_id,
-      prompt: [{type: 'text', text: text}],
-    },
+    params: {sessionId: session_id, prompt: blocks},
   })
+enddef
+
+# M4 队列（design D2：B1/W2/W7）
+def Enqueue(blocks: list<dict<any>>)
+  var max = exists('g:agent_shell_queue_max') ? g:agent_shell_queue_max : 5
+  if len(queue) >= max
+    render.Log('QUEUE', $'队列已满（上限 {max}），本条被拒——请先 :AgentQueueClear')
+    return
+  endif
+  add(queue, {blocks: copy(blocks), sid: session_id})
+  render.Log('QUEUE', $'排队中（待发 {len(queue)} 条）——轮次结束自动发送')
+enddef
+
+export def QueueClear()
+  var n = len(queue)
+  if dequeue_timer != 0
+    timer_stop(dequeue_timer)
+    dequeue_timer = 0
+  endif
+  queue = []
+  render.Log('QUEUE', $'已清空队列（{n} 条）')
+enddef
+
+# BusyClear 收口：出队（单例 timer 150ms）
+def ScheduleDequeue()
+  if !empty(queue) && dequeue_timer == 0
+    dequeue_timer = timer_start(150, (t: number) => DequeueFire(t))
+  endif
+enddef
+
+def DequeueFire(_: number)
+  dequeue_timer = 0
+  # 三重守卫（B1）：Running + 非 busy + 队首 sid == 当前会话
+  if !protocol.Running() || busy || empty(queue)
+    queue = []
+    render.Log('QUEUE', '会话已变化，队列已清空')
+    return
+  endif
+  if queue[0]['sid'] !=# session_id
+    queue = []
+    render.Log('QUEUE', '会话已切换，队列已清空（不串发到新会话）')
+    return
+  endif
+  var item = remove(queue, 0)
+  render.Log('QUEUE', $'出队发送（剩余 {len(queue)}）')
+  FirePrompt(item['blocks'])
 enddef
 
 export def PermAnswer(optionId: string)
@@ -259,6 +366,46 @@ def HandleUpdate(params: any)
     if t !=# ''
       session_title = t
     endif
+  elseif st ==# 'available_commands_update'
+    # M4：命令表缓存（补全数据源）
+    avail_cmds = upd->get('availableCommands', [])
+  elseif st ==# 'usage_update'
+    AccumulateUsage(upd)
+  endif
+enddef
+
+# M4 usage 累计（B2 统一：标准字段优先分别累计；used 走总量口径）
+def AccumulateUsage(upd: dict<any>)
+  last_usage = copy(upd)
+  var it = upd->get('inputTokens', -1)
+  var ot = upd->get('outputTokens', -1)
+  if it >= 0 && ot >= 0
+    usage_in += it
+    usage_out += ot
+  else
+    var used = upd->get('used', -1)
+    if used >= 0
+      usage_total += used
+    endif
+  endif
+enddef
+
+export def ShowUsage()
+  if usage_in > 0 || usage_out > 0
+    render.Log('USE', $'累计 in={usage_in} out={usage_out}')
+  elseif usage_total > 0
+    render.Log('USE', $'累计 total={usage_total}（总量口径——agent 未提供输入/输出拆分）')
+  else
+    render.Log('USE', '尚无用量数据')
+  endif
+  if !empty(last_usage)
+    var it = last_usage->get('inputTokens', -1)
+    var ot = last_usage->get('outputTokens', -1)
+    if it >= 0 && ot >= 0
+      render.Log('USE', $'最近一轮 in={it} out={ot}')
+    else
+      render.Log('USE', $'最近一轮 used={last_usage->get("used", "?")}')
+    endif
   endif
 enddef
 
@@ -281,6 +428,8 @@ def HandleResponse(msg: dict<any>)
     elseif id == id_session_new
       # spec：「session/new 被拒绝」——错误呈现，不进入可用会话
       render.Log('ERR', $'session/new 被拒绝（{err->get("code", "?")}）：{err->get("message", "")}')
+    elseif id == id_set_mode
+      render.Log('MODE', $'模式切换被拒（{err->get("code", "?")}）：{err->get("message", "")}')
     elseif id == id_initialize
       render.Log('ERR', $'initialize 失败：{err->get("message", "")}')
     else
@@ -300,9 +449,16 @@ def HandleResponse(msg: dict<any>)
     HandleLoadResult(result)
     return
   endif
+  if id == id_set_mode
+    cur_mode = last_set_mode  # 成功后当前模式刷新
+    render.Log('MODE', $'模式已切换：{cur_mode}')
+    return
+  endif
   if id == id_session_new && type(result) == v:t_dict && result->has_key('sessionId')
     session_id = result['sessionId']
     render.Log('ACP', $'session 建立成功：{session_id}')
+    ParseModes(result)
+    ResetSessionState()  # M4：新会话边界（W1：usage 重置；空队列清理无害）
     sessions.Register(current_preset, session_id, session_title, getcwd())
     # 自动启动链：握手完成 → 触发挂起的 load（design D4 三段链第三段）
     if !empty(pending_load)
@@ -319,10 +475,12 @@ def HandleResponse(msg: dict<any>)
   endif
 
   # ---- 形状判别（自增段：主动 new / 轮次结束） ----
-  if type(result) == v:t_dict && result->has_key('sessionId')
+  if type(result) == v:t_dict && result->has_key('sessionId') && id != id_load
     # 主动 :AgentSessionNew 的响应
     session_id = result['sessionId']
     session_title = ''
+    ParseModes(result)
+    ResetSessionState()
     render.Log('SESS', $'── 新会话 ── {session_id}')
     sessions.Register(current_preset, session_id, session_title, getcwd())
     return
@@ -360,6 +518,8 @@ def HandleLoadResult(result: any)
     return
   endif
   session_id = new_sid
+  ParseModes(r)  # M4：2026-11-20 实测 load 也返回 modes
+  ResetSessionState()
   # verify C-1：title/cwd 从 loading_entry 取（原 pending_load 响应时恒空 → title 丢失）
   var title = loading_entry->get('title', '')
   var shown = title ==# '' ? strpart(new_sid, 0, 8) .. '…' : title
@@ -375,6 +535,26 @@ def BusyClear()
     busy = false
     render.NotifyBusyChanged()
   endif
+  ScheduleDequeue()  # M4：轮次结束→队列依序接力
+enddef
+
+# M4 会话边界统一清理（design B1①/W1）：队列/附件/usage
+def ResetSessionState()
+  if dequeue_timer != 0
+    timer_stop(dequeue_timer)
+    dequeue_timer = 0
+  endif
+  if !empty(queue)
+    render.Log('QUEUE', $'会话已结束，队列清空（{len(queue)} 条）')
+    queue = []
+  endif
+  if !empty(pending_image)
+    render.Log('IMG', '会话已结束，挂起附件清除')
+    pending_image = {}
+  endif
+  usage_in = 0
+  usage_out = 0
+  usage_total = 0
 enddef
 
 # ---------- 权限 ----------
@@ -398,6 +578,114 @@ def EnsureReady(): bool
     return false
   endif
   return true
+enddef
+
+# M4：modes/configOptions 解析（握手 new 与 load 双处——D4 + 2026-11-20 实测）
+def ParseModes(result: dict<any>)
+  var m = result->get('modes', {})
+  if type(m) == v:t_dict
+    var cur = m->get('currentModeId', '')
+    var avail = m->get('availableModes', [])
+    if type(avail) == v:t_list && !empty(avail)
+      modes_list = avail
+      cur_mode = cur
+    endif
+  endif
+  var co = result->get('configOptions', [])
+  if type(co) == v:t_list && !empty(co)
+    config_opts = co
+  endif
+enddef
+
+export def ShowModes()
+  if empty(modes_list)
+    render.Log('MODE', '当前 agent 未提供模式列表')
+    return
+  endif
+  for m in modes_list
+    var mark = m->get('id', '') ==# cur_mode ? ' *' : ''
+    render.Log('MODE', $'{m->get("id", "?")}{mark} — {m->get("name", "")}：{m->get("description", "")}')
+  endfor
+enddef
+
+export def SetMode(mode_id: string)
+  if empty(modes_list)
+    render.Log('MODE', '当前 agent 未提供模式列表')
+    return
+  endif
+  var valid = false
+  for m in modes_list
+    if m->get('id', '') ==# mode_id
+      valid = true
+      break
+    endif
+  endfor
+  if !valid
+    var names = modes_list->mapnew((_: number, m: dict<any>) => m->get('id', '?'))
+    render.Log('MODE', $'无效模式：{mode_id}。可选：' .. names->join(' | '))
+    return
+  endif
+  id_set_mode = protocol.NextId()
+  last_set_mode = mode_id
+  SendRaw({
+    jsonrpc: '2.0', id: id_set_mode, method: 'session/set_mode',
+    params: {sessionId: session_id, modeId: mode_id},
+  })
+enddef
+
+export def ShowConfig()
+  if empty(config_opts)
+    render.Log('CFG', '当前 agent 未提供配置项')
+    return
+  endif
+  for co in config_opts
+    var vals = co->get('options', [])->mapnew((_: number, o: dict<any>) => o->get('value', o->get('name', '?')))
+    var ro = co->get('id', '') ==# 'model' ? '（仅展示——无标准切换 RPC）' : ''
+    render.Log('CFG', $'{co->get("name", co->get("id", "?"))}: {co->get("currentValue", "?")} {ro}  可选: ' .. vals->join(' | '))
+  endfor
+enddef
+
+# M4：图片挂载（W4：getfsize<0 显式拒；shellescape；2MB 上限）
+export def AttachImage(path: string)
+  var full = expand(path)
+  if !filereadable(full)
+    render.Log('IMG', $'文件不存在：{full}')
+    return
+  endif
+  var size = getfsize(full)
+  if size < 0
+    render.Log('IMG', $'无法读取文件大小：{full}')
+    return
+  endif
+  if size > 2 * 1024 * 1024
+    render.Log('IMG', $'图片超过 2MB 上限（{size} bytes）')
+    return
+  endif
+  var ext = tolower(fnamemodify(full, ':e'))
+  var mime = ''
+  if ext ==# 'png'
+    mime = 'image/png'
+  elseif ext ==# 'jpg' || ext ==# 'jpeg'
+    mime = 'image/jpeg'
+  elseif ext ==# 'webp'
+    mime = 'image/webp'
+  else
+    render.Log('IMG', $'不支持的格式 .{ext}（支持 png/jpg/jpeg/webp）')
+    return
+  endif
+  var b64 = ''
+  try
+    b64 = substitute(system('base64 < ' .. shellescape(full)), '[\n\r]', '', 'g')
+  catch
+    render.Log('IMG', 'base64 编码失败（需要 unix base64 命令）')
+    return
+  endtry
+  if v:shell_error != 0 || b64 ==# ''
+    render.Log('IMG', 'base64 编码失败')
+    return
+  endif
+  pending_image = {path: full, b64: b64, mime: mime}
+  render.Log('IMG', $'附件已挂载：{full}（{size} bytes → {len(b64)} chars）——下次发送携带')
 enddef
 
 def SendRaw(msg: dict<any>)

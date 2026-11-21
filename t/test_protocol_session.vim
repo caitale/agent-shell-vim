@@ -478,6 +478,290 @@ let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
 call s:Check('sess_preset_missing',
       \ s:chat_all =~# '已不存在' && agent_shell#session#SessionId() ==# '')
 
+" ---------- 组G：M4 生产化（spec: prod-features） ----------
+
+" 组F 尾 ghost-preset 后 agent 已停——重启到干净会话
+AgentStart
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'session 建立成功'
+    sleep 300m
+    break
+  endif
+endwhile
+
+" 补全数据源：FilesFor（仓库文件命中）/ CommandsFor（mock 命令表——握手后已推）
+let s:files = agent_shell#complete#FilesFor('READ')
+call s:Check('complete_files_hit',
+      \ len(s:files) > 0 && s:files[0].word ==# 'README.md')
+let s:cmds = agent_shell#complete#CommandsFor('pl')
+call s:Check('complete_commands_hit',
+      \ len(s:cmds) == 1 && s:cmds[0].word ==# '/plan')
+" 无命令前缀空表安全
+let s:cmds2 = agent_shell#complete#CommandsFor('zzz')
+call s:Check('complete_commands_empty_safe', empty(s:cmds2))
+
+" 队列闭环：发两条（第一条 busy 直发、第二条入队）→ 答权限 → 出队自动发
+" 当前 agent 处于已恢复的 known 会话（组F 尾），先 AgentSessionNew 到干净态
+AgentSessionNew
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '新会话'
+    break
+  endif
+endwhile
+AgentSend queue-first
+sleep 300m
+AgentSend queue-second
+let s:deadline = localtime() + 3
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '排队中'
+    break
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('queue_enqueued', s:chat_all =~# '排队中（待发 1 条）')
+" 答第一条权限 → 第一轮结束 → 150ms 后出队第二条 → 第二条权限到达
+let s:answered = 0
+let s:deadline = localtime() + 10
+while localtime() < s:deadline
+  sleep 150m
+  let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+  if s:chat_all =~# '出队发送'
+    break
+  endif
+  if s:chat_all =~# 'Agent 请求权限' && !s:answered
+    AgentPermAllow
+    let s:answered = 1
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('queue_dequeued_auto', s:chat_all =~# '出队发送（剩余 0）')
+" 答第二条权限收尾
+let s:deadline = localtime() + 8
+while localtime() < s:deadline
+  sleep 150m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    AgentPermAllow
+    sleep 300m
+  endif
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'stopReason=end_turn'
+        \ && join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'queue-second'
+    break
+  endif
+endwhile
+" moved：两轮 usage 已推（100/50 ×2）——Stop 清零之前断言累计
+sleep 300m
+AgentUsage
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('usage_accumulated',
+      \ s:chat_all =~# '累计 in=200 out=100' && s:chat_all =~# '最近一轮 in=100 out=50')
+" 会话边界清队列（B1）：busy 入队（QueueDepth 验证）→ busy 中 SessionNew 被 M3
+" 守卫拒（正确）→ AgentStop 触发 ResetSessionState 清队提示
+AgentSend b1-probe
+sleep 300m
+AgentSend b1-queued
+let s:deadline = localtime() + 3
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '排队中'
+    break
+  endif
+endwhile
+call s:Check('queue_depth_visible', agent_shell#session#QueueDepth() == 1)
+AgentSessionNew
+call s:Check('queue_new_busy_guarded',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '轮次进行中')
+AgentStop
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('queue_cleared_on_stop',
+      \ s:chat_all =~# '会话已结束，队列清空（1 条）')
+" AgentQueueClear 命令路径（空队列清空提示）
+AgentQueueClear
+call s:Check('queue_clear_cmd',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '已清空队列（0 条）')
+" 重启 agent 供后续场景
+AgentStart
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 50m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'session 建立成功'
+    sleep 300m | break
+  endif
+endwhile
+
+" usage：两轮累计（在 b1/Stop 清零之前断言——b1 段已在上面完成 Stop+重启，
+" 故此处为重启后的新会话；改在 queue 第二轮 stopReason 处断言过的位置重排：
+" 将累计断言提前到 queue 段完成处（见下方 moved 标记）
+" 换会话重置
+AgentSessionNew
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '── 新会话'
+    break
+  endif
+endwhile
+AgentUsage
+call s:Check('usage_reset_on_new',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '尚无用量数据')
+
+" 模式：列表（含 * 当前）/ 切换 / 无效 / agent 拒绝
+AgentMode
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('mode_list_rendered',
+      \ s:chat_all =~# 'auto \* — Auto' && s:chat_all =~# 'plan — Plan')
+AgentMode plan
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '模式已切换：plan'
+    break
+  endif
+endwhile
+call s:Check('mode_switch_ok',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '模式已切换：plan')
+AgentMode bogus
+call s:Check('mode_invalid_listed',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '无效模式：bogus')
+AgentMode reject_me
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '模式切换被拒'
+    break
+  endif
+endwhile
+call s:Check('mode_agent_reject',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '模式切换被拒')
+AgentConfig
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('config_shown',
+      \ s:chat_all =~# 'Model:.*仅展示' && s:chat_all =~# 'Mode: auto')
+
+" 图片：挂载 → 发送回显 → 清槽；超限/格式/不存在拒绝
+call writefile(['fake-png-not-real-image'], '/tmp/as_test.png')
+AgentImage /tmp/as_test.png
+call s:Check('image_attached',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '附件已挂载')
+" 格式拒绝
+call writefile(['x'], '/tmp/as_test.gif')
+AgentImage /tmp/as_test.gif
+call s:Check('image_format_rejected',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '不支持的格式 .gif')
+" 不存在
+AgentImage /tmp/as_nonexistent.png
+call s:Check('image_missing_rejected',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '文件不存在')
+" 仅图片发送（B4：空输入区——挂载后不写文本直接 SendInput）
+AgentDiffStatus  " noop 占位防误触
+call agent_shell#render#SendInput()
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '附件已发送'
+    break
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('image_sent_and_cleared',
+      \ s:chat_all =~# '附件已发送：/tmp/as_test.png' && empty(agent_shell#session#PendingImage()))
+" 权限收尾（image 轮的）
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    AgentPermAllow
+    sleep 300m
+    break
+  endif
+endwhile
+
+" 队列超限（C-2）：上限设 1，busy 中连发两条 → 第二条被拒
+let g:agent_shell_queue_max = 1
+AgentSessionNew
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '── 新会话'
+    break
+  endif
+endwhile
+AgentSend over-1
+sleep 300m
+AgentSend over-2
+sleep 200m
+AgentSend over-3
+let s:deadline = localtime() + 3
+while localtime() < s:deadline
+  sleep 50m
+  let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+  if s:chat_all =~# '队列已满'
+    break
+  endif
+endwhile
+call s:Check('queue_overflow_rejected',
+      \ s:chat_all =~# '队列已满（上限 1）')
+" 清理该轮（拒权限+清队）
+AgentQueueClear
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    AgentPermReject
+    sleep 300m
+    break
+  endif
+endwhile
+
+" 图片超限（C-2）：>2MB 拒
+call system('dd if=/dev/zero of=/tmp/as_big.png bs=1048576 count=3 2>/dev/null')
+AgentImage /tmp/as_big.png
+call s:Check('image_oversize_rejected',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '图片超过 2MB 上限')
+
+" [text,image] 双 block（verify 建议4）：挂图+输入区文本 → 同轮双回显
+call writefile(['txt-img-png'], '/tmp/as_ti.png')
+AgentImage /tmp/as_ti.png
+call appendbufline(bufnr('agent-shell-chat'), '$', '带图的文本消息')
+call agent_shell#render#SendInput()
+let s:deadline = localtime() + 6
+while localtime() < s:deadline
+  sleep 100m
+  let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+  if s:chat_all =~# '附件已发送' && s:chat_all =~# '\[image: image/png'
+    break
+  endif
+endwhile
+call s:Check('image_text_blocks_both',
+      \ s:chat_all =~# '\[image: image/png [0-9]* chars\]' && s:chat_all =~# '带图的文本消息')
+" 权限收尾
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    AgentPermAllow
+    sleep 300m
+    break
+  endif
+endwhile
+let g:agent_shell_queue_max = 5
+
+" 登记表损坏重置（B5：M3 余项）
+call writefile(['{corrupted json!!'], '/tmp/agent_shell_corrupt_reg.json')
+let g:agent_shell_registry_path = '/tmp/agent_shell_corrupt_reg.json'
+call agent_shell#sessions#ResetForTest()
+AgentSessionLoad
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('registry_corrupt_reset',
+      \ s:chat_all =~# '登记表为空')
+" 恢复隔离路径
+let g:agent_shell_registry_path = '/tmp/agent_shell_test_registry.json'
+call agent_shell#sessions#ResetForTest()
+
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')
 

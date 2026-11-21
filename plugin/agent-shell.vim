@@ -21,6 +21,8 @@ vim9script
 #   g:agent_shell_diff_auto    非 0 时 edit 完成自动打开 vimdiff 审查（默认 0）
 #   g:agent_shell_diff_chain   非 0 时审查完自动跳下一待审查项（默认 0）
 #   g:agent_shell_registry_path  会话登记表路径（默认 ~/.cache/agent-shell-vim/sessions.json）
+#   g:agent_shell_queue_max     prompt 队列上限（默认 5）
+#   g:agent_shell_no_tab_map    非 0 时不注册输入区 Tab 补全映射（completefunc 仍可用）
 
 # 踩坑规避（spike 实证）：命令定义一律 command! X call Func()，
 # 禁止 lambda 内联（静默 no-op）；命令名与函数名解耦（E117）。
@@ -31,6 +33,7 @@ import autoload '../autoload/agent_shell/render.vim'
 import autoload '../autoload/agent_shell/presets.vim'
 import autoload '../autoload/agent_shell/diff.vim'
 import autoload '../autoload/agent_shell/sessions.vim'
+import autoload '../autoload/agent_shell/complete.vim'
 
 def DiffStatusEcho()
   for e in diff.Status()
@@ -53,6 +56,11 @@ command! AgentSessionList call sessions.ListSessions()
 command! -nargs=? AgentSessionLoad call sessions.LoadDispatch(<q-args>)
 command! AgentSessionNew call sessions.NewSession()
 command! AgentSessionCurrent call sessions.ShowCurrent()
+command! AgentQueueClear call session.QueueClear()
+command! AgentUsage call session.ShowUsage()
+command! -nargs=? AgentMode call sessions.ModeDispatch(<q-args>)
+command! AgentConfig call session.ShowConfig()
+command! -nargs=1 AgentImage call session.AttachImage(<q-args>)
 
 # preset 名补全（转发到 presets 模块；解耦命名避免 E117）
 def g:AgentShellPresetComp(arglead: string, _1: string, _2: number): string

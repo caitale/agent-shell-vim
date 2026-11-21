@@ -76,12 +76,48 @@ class Agent:
             })
         elif method == "session/new":
             self.sid = "sess_" + uuid.uuid4().hex[:12]
-            # 对齐真实 agent：session/new 响应带 modes（claude-agent-acp 实测有此字段）
-            respond(rid, {"sessionId": self.sid, "modes": {}})
+            if os.environ.get("MOCK_NO_MODES") == "1":
+                respond(rid, {"sessionId": self.sid})
+                return
+            # M4（B3）：modes/configOptions 对齐 claude-agent-acp 抓包形状
+            respond(rid, {
+                "sessionId": self.sid,
+                "modes": {
+                    "currentModeId": "auto",
+                    "availableModes": [
+                        {"id": "default", "name": "Manual", "description": "Always ask"},
+                        {"id": "acceptEdits", "name": "Accept edits", "description": "Auto accept edits"},
+                        {"id": "plan", "name": "Plan", "description": "Plan first"},
+                        {"id": "auto", "name": "Auto", "description": "Agent decides"},
+                        {"id": "bypassPermissions", "name": "Bypass", "description": "Accept all"},
+                        {"id": "reject_me", "name": "Reject", "description": "Agent rejects this"},  # W3
+                    ],
+                },
+                "configOptions": [
+                    {"id": "mode", "name": "Mode", "type": "select", "currentValue": "auto",
+                     "options": [{"value": m["id"], "name": m["name"]} for m in [
+                         {"id": "default", "name": "Manual"}, {"id": "plan", "name": "Plan"}, {"id": "auto", "name": "Auto"}]]},
+                    {"id": "model", "name": "Model", "type": "select", "currentValue": "zcode/GLM-5.3[1m]",
+                     "options": [{"value": "zcode/GLM-5.3[1m]", "name": "GLM-5.3"},
+                                 {"value": "zcode/GLM-5.3-Flash[1m]", "name": "Flash"}]},
+                ],
+            })
+            # M4：握手后推命令表（补全数据源）
+            self.chunk("available_commands_update", None,
+                       availableCommands=[
+                           {"name": "/plan", "description": "先规划再执行"},
+                           {"name": "/compact", "description": "压缩上下文"},
+                       ])
         elif method == "session/prompt":
             self.run_turn(rid, params)
         elif method == "session/cancel":
             respond(rid, {})
+        elif method == "session/set_mode":
+            mid = params.get("modeId", "")
+            if mid == "reject_me":
+                respond(rid, error={"code": -32000, "message": "mode rejected by agent"})
+            else:
+                respond(rid, {})
         elif method == "session/list":
             self.handle_list(rid, params)
         elif method == "session/load":
@@ -93,6 +129,11 @@ class Agent:
         text = "".join(
             b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text"
         )
+        # M4：image block 检测（回显 mime + b64 长度，不解析内容）
+        for blk in params.get("prompt", []):
+            if isinstance(blk, dict) and blk.get("type") == "image":
+                self.chunk("user_message_chunk", {"type": "text", "text":
+                    f"[image: {blk.get('mimeType', '?')} {len(blk.get('data', ''))} chars]"})
         # 1) 回显用户消息
         self.chunk("user_message_chunk", {"type": "text", "text": text})
         # 2) 计划
@@ -140,6 +181,12 @@ class Agent:
         # 5) 流式回复（多 chunk 演示流式）
         for piece in (f"收到：「{p['text']}」。", "这是一段流式输出，", "由 mock-agent 分三个 chunk 发出。"):
             self.chunk("agent_message_chunk", {"type": "text", "text": piece})
+        # M4：usage_update（B2：双字段；MOCK_USAGE_MODE=used_only 只推 used——降级测试）
+        if os.environ.get("MOCK_USAGE_MODE") == "used_only":
+            self.chunk("usage_update", None, used=300, size=272000)
+        else:
+            self.chunk("usage_update", None,
+                       used=300, size=272000, inputTokens=100, outputTokens=50)
         respond(p["prompt_id"], {"stopReason": "end_turn"})
 
     # ---- M3 会话管理夹具（契约对齐两桥实测） ----

@@ -222,7 +222,15 @@ export def SendInput()
     last -= 1
   endwhile
   if last < start
-    echom '输入区为空'
+    # B4：空输入但有挂起图片 → 放行（仅 image block 由 session 组包）
+    if empty(session.PendingImage())
+      echom '输入区为空'
+      return
+    endif
+    session.SendPromptText('')
+    # 清空输入区（保持一行）
+    deletebufline(b, input_lnum + 1, '$')
+    appendbufline(b, '$', '')
     return
   endif
   var text = join(lines[start : last], "\n")
@@ -290,6 +298,11 @@ def SetupWindow(win: number)
   win_execute(win, 'nnoremap <buffer> y <ScriptCmd>agent_shell#session#PermAnswer(''allow_once'')<CR>')
   win_execute(win, 'nnoremap <buffer> n <ScriptCmd>agent_shell#session#PermAnswer(''reject_once'')<CR>')
   win_execute(win, 'nnoremap <buffer> d <ScriptCmd>agent_shell#diff#Review()<CR>')
+  # M4 补全：completefunc（buffer-local，# 全局名）+ Tab 映射（W5 逃生口）
+  win_execute(win, 'setlocal completefunc=agent_shell#complete#Input')
+  if !exists('g:agent_shell_no_tab_map') || !g:agent_shell_no_tab_map
+    win_execute(win, 'inoremap <buffer> <Tab> <ScriptCmd>agent_shell#complete#Tab()<CR>')
+  endif
   SetupHighlight(win)
 enddef
 
@@ -329,9 +342,9 @@ enddef
 # statusline 表达式入口（export 注册 # 全局名供 %{...} 引用）
 export def StatusLine(): string
   if session.IsBusy()
-    return BUSY_FRAMES[busy_frame_idx % len(BUSY_FRAMES)] .. ' agent working…'
+    return BUSY_FRAMES[busy_frame_idx % len(BUSY_FRAMES)] .. ' agent working…' .. session.UsageBrief()
   endif
-  return 'agent-shell'
+  return 'agent-shell' .. session.UsageBrief()
 enddef
 
 # session 在轮次起止时调用
@@ -380,8 +393,3 @@ export def BusyFrame(): string
   return BUSY_FRAMES[busy_frame_idx % len(BUSY_FRAMES)]
 enddef
 
-# ---------- 挂载点 ----------
-
-export def OnInputArea()
-  # M2+: 输入区高级特性（@补全挂载等）
-enddef

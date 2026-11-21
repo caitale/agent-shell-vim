@@ -45,6 +45,21 @@ agent 修改文件后，改动进入待审查队列，聊天中的 TOOL 折叠�
 
 注意：拒绝是本地回滚，agent 上下文仍认为修改成功——请在其后的对话中告知它（聊天中也会有提示行）。文件在拒绝前若已被再次修改（与 newText 不一致），插件会拒绝写回并警告，转人工处理。
 
+## 生产力特性（M4）
+
+```vim
+" 输入区补全：@ 文件路径 / 行首 / 斜杠命令（Tab 或 <C-X><C-U> 呼出；
+" Tab 映射可用 g:agent_shell_no_tab_map=1 关闭）
+" prompt 队列：busy 时发送自动排队（上限 g:agent_shell_queue_max，默认 5），
+"            轮次结束依序自动发送；:AgentQueueClear 清空
+:AgentUsage             " 累计 token（in/out 分别累计；agent 只给总量时按总量口径）
+:AgentMode [mode]       " 列出/切换权限模式（default/plan/auto/…，agent 提供时）
+:AgentConfig            " 查看会话配置（模型只读展示——无标准切换 RPC）
+:AgentImage <path>      " 挂图片附件（png/jpg/webp ≤2MB），随下次发送
+```
+
+状态行会显示 busy 旋转指示与累计 token 简报。
+
 ## 会话管理（M3）
 
 ```vim
@@ -93,13 +108,15 @@ let g:agent_shell_agents = {
 | `g:agent_shell_diff_auto` | edit 完成自动打开 vimdiff 审查 | 0 |
 | `g:agent_shell_diff_chain` | 审查完自动跳下一待审查项 | 0 |
 | `g:agent_shell_registry_path` | 会话登记表路径 | `~/.cache/…/sessions.json` |
+| `g:agent_shell_queue_max` | prompt 队列上限 | 5 |
+| `g:agent_shell_no_tab_map` | 不注册输入区 Tab 补全映射 | 0 |
 
 UI 说明：轮次进行中聊天窗口状态行显示旋转 busy 指示；工具调用渲染为折叠块（自定义 marker `«as»`，`zo/zc` 开合）。
 
 ## 测试
 
 ```sh
-./t/run.sh        # headless 全链路（49 断言，零 token）
+./t/run.sh        # headless 全链路（68 断言，零 token）
 # 真实 agent 冒烟（手动，耗 token）：
 vim -Nu NONE -n -es -c 'let g:agent_shell_smoke = "claude"' -S t/smoke_real.vim -c 'qa!'
 ```
@@ -108,13 +125,13 @@ CI：GitHub Actions，Vim 9.1/9.2 矩阵（`.github/workflows/test.yml`）。
 
 ## Roadmap
 
-M0 骨架 ✅ → M1 聊天 + UI 基线 ✅ → M2 diff 审查 ✅ → M3 会话管理 ✅（list/load/new/登记表）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
+M0 骨架 ✅ → M1 UI 基线 ✅ → M2 diff 审查 ✅ → M3 会话管理 ✅ → M4 生产力 ✅（补全/队列/成本/模式/图片）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
 
 ## 目录
 
 ```
 plugin/agent-shell.vim        入口：命令与配置
-autoload/agent_shell/         protocol / session / render / presets / diff / sessions 六模块
+autoload/agent_shell/         protocol / session / render / presets / diff / sessions / complete 七模块
 t/                            headless 测试 + mock 夹具 + 手动冒烟
 research/                     调研资料（spike、竞品分析、roadmap）
 openspec/                     spec 驱动开发的变更与规格

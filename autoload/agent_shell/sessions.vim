@@ -220,6 +220,15 @@ export def NewSession()
   session.RequestNew()
 enddef
 
+# :AgentMode [modeId?]（无参列表/带参切换）
+export def ModeDispatch(arg: string)
+  if arg ==# ''
+    session.ShowModes()
+  else
+    session.SetMode(arg)
+  endif
+enddef
+
 export def ShowCurrent()
   var sid = session.SessionId()
   var title = session.Title()
