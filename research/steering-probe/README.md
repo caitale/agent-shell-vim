@@ -11,6 +11,11 @@
 3. **claude idle**：连续两次 steering
    - 第一次 `startedNewTurn`（桥自起轮）；第二次（新轮进行中）`injected`
 
+## 补档（评审 W1）
+
+- steer_pi_method_probe.jsonl：pi 对 `_session/steering` 的直接响应——**-32601 Method not found**（补齐矩阵该格的流量证据）
+- steer_midturn.jsonl L1：claude initialize 响应 `_meta` 含 `steering:{supported:true}` 与 `claudeCode.promptQueueing:true`（能力声明信号——add-steering design W4 采用）
+
 ## 结论（add-steering 的实证基础）
 
 - claude：native 直发（mid-turn injected 实测生效）
