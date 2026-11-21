@@ -220,6 +220,16 @@ export def NewSession()
   session.RequestNew()
 enddef
 
+# :AgentSteer [text?]（无参=转发输入区提取；带参直发）
+export def SteerDispatch(arg: string)
+  if arg ==# ''
+    # 经 render 提取（复用 SteerInput 全逻辑）
+    call agent_shell#render#SteerInput()
+  else
+    session.SteerText(arg)
+  endif
+enddef
+
 # :AgentMode [modeId?]（无参列表/带参切换）
 export def ModeDispatch(arg: string)
   if arg ==# ''

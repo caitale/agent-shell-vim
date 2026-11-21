@@ -17,6 +17,11 @@ MOCK_USAGE_MODE=used_only vim -Nu NONE -n -es -S t/test_usage_mode.vim -c 'qa!' 
 cat /tmp/agent_shell_usage_mode_result.txt >> /tmp/agent_shell_test_result.txt 2>/dev/null
 MOCK_NO_MODES=1 vim -Nu NONE -n -es -S t/test_no_modes.vim -c 'qa!' || true
 cat /tmp/as_no_modes_result.txt >> /tmp/agent_shell_test_result.txt 2>/dev/null
+# M5 steering：四模式子进程
+for SMODE in preset_none new_turn err queued queued_reject; do
+  MOCK_STEER=$SMODE vim -Nu NONE -n -es -S t/test_steer_modes.vim -c 'qa!' || true
+  cat /tmp/as_steer_mode_result.txt >> /tmp/agent_shell_test_result.txt 2>/dev/null
+done
 echo "---- results ----"
 cat /tmp/agent_shell_test_result.txt
 if grep -q FAIL /tmp/agent_shell_test_result.txt; then

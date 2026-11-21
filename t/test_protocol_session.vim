@@ -762,6 +762,107 @@ call s:Check('registry_corrupt_reset',
 let g:agent_shell_registry_path = '/tmp/agent_shell_test_registry.json'
 call agent_shell#sessions#ResetForTest()
 
+" ---------- 组H：M5 steering（spec: steering） ----------
+
+" 回到干净会话（组G 尾可能处于各状态）
+AgentSessionNew
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '── 新会话'
+    break
+  endif
+endwhile
+" 清可能残留的挂起权限
+AgentPermReject
+
+" H1 空闲首探（B1'：idle 也探）：mock 无 _meta → unknown → 首探 → injected → native
+call agent_shell#session#SteerText('idle-probe-steer')
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '已注入当前轮次'
+    break
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('steer_idle_probe_native',
+      \ s:chat_all =~# '已注入当前轮次' && s:chat_all =~# '\[你·STEER\] idle-probe-steer')
+" mock 收到转向回执
+call s:Check('steer_mock_echo', s:chat_all =~# '（收到转向）')
+
+" H2 busy 中 steer（native：injected + 转向覆盖权限轮 + B1 权限作废）
+AgentSend busy-steer-probe
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    break
+  endif
+endwhile
+call s:Check('steer_busy_guard_queue', 1)  " 占位：转向不排队在 H3
+call agent_shell#session#SteerText('mid-turn-change-direction')
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+  if s:chat_all =~# '（收到转向）'
+    break
+  endif
+endwhile
+let s:chat_all = join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n")
+call s:Check('steer_busy_injected',
+      \ s:chat_all =~# '\[你·STEER\] mid-turn-change-direction' && s:chat_all =~# '已注入当前轮次')
+" 等挂起轮 end_turn（steer 生效）
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'stopReason=end_turn'
+    break
+  endif
+endwhile
+" W-5：权限残留窗口关闭——perm 误触不再产生 stale 答复行
+AgentPermAllow
+sleep 300m
+sleep 200m
+call s:Check('steer_perm_window_closed',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '当前没有挂起的权限请求')
+
+" H3 转向不排队：busy 入队 1 条普通 + steer 直发 → queue 深度不变
+AgentSend q-probe
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '排队中'
+    break
+  endif
+endwhile
+let s:qdepth = agent_shell#session#QueueDepth()
+call agent_shell#session#SteerText('steer-while-queued')
+sleep 500m
+call s:Check('steer_not_queued', agent_shell#session#QueueDepth() == s:qdepth)
+" 清理：拒权限 + 清队
+AgentQueueClear
+let s:deadline = localtime() + 5
+while localtime() < s:deadline
+  sleep 100m
+  if join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# 'Agent 请求权限'
+    AgentPermReject
+    sleep 300m
+    break
+  endif
+endwhile
+
+" H4 空输入 steer 拒绝
+call agent_shell#session#SteerText('')
+call s:Check('steer_empty_rejected',
+      \ join(getbufline(bufnr('agent-shell-chat'), 1, '$'), "\n") =~# '输入区为空')
+" verify C-1 回归防护：SteerDispatch 空参不抛 E117
+call agent_shell#sessions#SteerDispatch('')
+call s:Check('steer_dispatch_no_e117', 1)
+
+" H5 startedNewTurn（MOCK_STEER=new_turn 子进程场景——见 t/test_steer_modes.vim 挂 run.sh）
+
 " 保存聊天记录供检查
 call writefile(getbufline(bufnr('agent-shell-chat'), 1, '$'), '/tmp/agent_shell_test_chat.txt')
 

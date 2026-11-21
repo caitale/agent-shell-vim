@@ -61,6 +61,7 @@ command! AgentUsage call session.ShowUsage()
 command! -nargs=? AgentMode call sessions.ModeDispatch(<q-args>)
 command! AgentConfig call session.ShowConfig()
 command! -nargs=1 AgentImage call session.AttachImage(<q-args>)
+command! -nargs=? AgentSteer call sessions.SteerDispatch(<q-args>)
 
 # preset 名补全（转发到 presets 模块；解耦命名避免 E117）
 def g:AgentShellPresetComp(arglead: string, _1: string, _2: number): string

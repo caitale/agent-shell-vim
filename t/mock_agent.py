@@ -44,6 +44,7 @@ class Agent:
         self.uid = 0
         # 挂起的轮次：等待 client 回复权限请求后继续
         self.pending = None  # {"prompt_id":..., "perm_id":..., "text":..., "edit":bool}
+        self.server_queue = []  # W-3：MOCK_STEER=queued 的服务端排队
 
     # ---- helpers ----
     def chunk(self, session_update, content=None, **extra):
@@ -118,6 +119,8 @@ class Agent:
                 respond(rid, error={"code": -32000, "message": "mode rejected by agent"})
             else:
                 respond(rid, {})
+        elif method == "_session/steering":
+            self.handle_steer(rid, params)
         elif method == "session/list":
             self.handle_list(rid, params)
         elif method == "session/load":
@@ -126,6 +129,16 @@ class Agent:
             respond(rid, error={"code": -32601, "message": f"unknown method: {method}"})
 
     def run_turn(self, prompt_id, params):
+        # W-3：queued 模式且当前轮挂起 → 服务端排队（当前轮完成后 drain）
+        if os.environ.get("MOCK_STEER") in ("queued", "queued_reject") and self.pending:
+            if os.environ.get("MOCK_STEER") == "queued_reject":
+                respond(prompt_id, error={"code": -32000, "message": "prompt rejected: no server queue"})
+                return
+            self.server_queue.append((prompt_id, "".join(
+                b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text")))
+            self.chunk("agent_message_chunk", {"type": "text",
+                "text": f"Queued message (position {len(self.server_queue)})."})
+            return
         text = "".join(
             b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text"
         )
@@ -178,6 +191,10 @@ class Agent:
                        kind="execute", status="pending", content={"type": "text", "text": "grep -rn TODO ."})
             self.chunk("tool_call", toolCallId=f"tc{self.uid}", title="grep",
                        kind="execute", status="completed", content={"type": "text", "text": "3 matches"})
+        # W-3：挂起轮完成 → 依序执行排队轮
+        if self.server_queue:
+            # 延迟到本响应之后：先回当前轮 stopReason 再 drain
+            pass
         # 5) 流式回复（多 chunk 演示流式）
         for piece in (f"收到：「{p['text']}」。", "这是一段流式输出，", "由 mock-agent 分三个 chunk 发出。"):
             self.chunk("agent_message_chunk", {"type": "text", "text": piece})
@@ -188,6 +205,48 @@ class Agent:
             self.chunk("usage_update", None,
                        used=300, size=272000, inputTokens=100, outputTokens=50)
         respond(p["prompt_id"], {"stopReason": "end_turn"})
+        if self.server_queue:
+            self.drain_server_queue()
+
+    # ---- M5 steering 夹具（add-steering design D5：四模式） ----
+    def handle_steer(self, rid, params):
+        mode = os.environ.get("MOCK_STEER", "")
+        if mode in ("queued", "queued_reject"):
+            respond(rid, error={"code": -32601, "message": "Method not found: _session/steering"})
+            return
+        if mode == "err":
+            respond(rid, error={"code": -32000, "message": "steer probe failed"})
+            return
+        if mode == "new_turn":
+            respond(rid, {"outcome": "startedNewTurn"})
+            self.chunk("agent_message_chunk", {"type": "text", "text": "（新轮次已开始）"})
+            return
+        # 默认：injected + B1 权限时序（作废挂起权限轮）+ 模拟注入生效
+        respond(rid, {"outcome": "injected"})
+        p = self.pending          # C-2：先存引用（原代码作废后再判断恒 False=死代码）
+        if p:
+            self.pending = None   # B1：作废权限流（客户端 stale 答复静默丢弃）
+        self.chunk("agent_message_chunk", {"type": "text", "text": "（收到转向）"})
+        if p:
+            respond(p["prompt_id"], {"stopReason": "end_turn"})
+
+    # W-3：服务端排队执行（MOCK_STEER=queued 时 busy prompt 入队，轮完依序）
+    def handle_queued_prompt(self, rid, params):
+        text = "".join(
+            b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text"
+        )
+        if self.server_queue is None:
+            self.server_queue = []
+        self.server_queue.append((rid, text))
+        self.chunk("agent_message_chunk", {"type": "text",
+            "text": f"Queued message (position {len(self.server_queue)})."})
+
+    def drain_server_queue(self):
+        q, self.server_queue = self.server_queue, []
+        for rid, text in q:
+            self.chunk("user_message_chunk", {"type": "text", "text": text})
+            self.chunk("agent_message_chunk", {"type": "text", "text": f"收到（排队轮）：「{text}」。"})
+            respond(rid, {"stopReason": "end_turn"})
 
     # ---- M3 会话管理夹具（契约对齐两桥实测） ----
     def handle_list(self, rid, params):

@@ -60,6 +60,27 @@ agent 修改文件后，改动进入待审查队列，聊天中的 TOOL 折叠�
 
 状态行会显示 busy 旋转指示与累计 token 简报。
 
+## 中途转向 steering（M5）
+
+```vim
+" 聊天窗口按 <M-CR>（normal/insert）或 :AgentSteer <text> ——轮次进行中改方向
+" claude 桥：立即注入当前轮次（mid-turn 实测生效）；空闲时桥自起轮次
+" pi 桥：自动降级为服务端排队语义（agent 端排队，当前轮完成后执行）
+```
+
+能力探测自动进行（initialize `_meta` 声明或首次使用时探测；连续失败自动收敛）。
+终端注意：`<M-CR>` 多数终端直接可用；tmux 需 `set -s xterm-keys on`（详见 README 附录）。
+preset 可显式声明：`{'cmd': [...], 'steering': 'native'|'queued'|'none'}`。
+
+三桥支持简表：claude=立即注入（mid-turn 实测生效）/ pi=服务端排队 / mock=测试基准。
+**双队列交错**：queued 语义下用 `<CR>` 排的客户端队列与 `<M-CR>` 走的桥端排队会交错发送（顺序仍正确，FIFO 兜底）；介意顺序时先用 `:AgentQueueClear`。
+
+## 附录：`<M-CR>` 终端兼容
+
+- 多数终端（iTerm2/Terminal.app/Alacritty/wezterm）：Alt+CR 直接可用
+- tmux：`set -s xterm-keys on`（否则 M-CR 可能被吃）
+- SSH 嵌套场景建议本地 Vim 或确认转义链路
+
 ## 会话管理（M3）
 
 ```vim
@@ -116,7 +137,7 @@ UI 说明：轮次进行中聊天窗口状态行显示旋转 busy 指示；工�
 ## 测试
 
 ```sh
-./t/run.sh        # headless 全链路（68 断言，零 token）
+./t/run.sh        # headless 全链路（86 断言，零 token）
 # 真实 agent 冒烟（手动，耗 token）：
 vim -Nu NONE -n -es -c 'let g:agent_shell_smoke = "claude"' -S t/smoke_real.vim -c 'qa!'
 ```
@@ -125,7 +146,7 @@ CI：GitHub Actions，Vim 9.1/9.2 矩阵（`.github/workflows/test.yml`）。
 
 ## Roadmap
 
-M0 骨架 ✅ → M1 UI 基线 ✅ → M2 diff 审查 ✅ → M3 会话管理 ✅ → M4 生产力 ✅（补全/队列/成本/模式/图片）→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
+M0–M4 ✅ → M5 差异化进行中：steering ✅（M-CR 转向/三桥自适应）→ 待做 traffic 回放/popup 预览→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
 
 ## 目录
 

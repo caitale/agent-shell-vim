@@ -193,6 +193,33 @@ def CompactUsage(upd: dict<any>): string
   return empty(parts) ? '(usage)' : parts->join(' ')
 enddef
 
+# M5 steering 输入区入口（<M-CR> 映射转发；提取逻辑与 SendInput 一致）
+export def SteerInput()
+  var b = ChatBuf()
+  var lines = getbufline(b, input_lnum + 1, '$')
+  var start = 0
+  while start < len(lines) && lines[start] =~# '^\s*$'
+    start += 1
+  endwhile
+  var last = len(lines) - 1
+  while last >= start && lines[last] =~# '^\s*$'
+    last -= 1
+  endwhile
+  if last < start
+    # 空输入但可能有挂起图片——交给 SteerText 判定（组包含图）
+    session.SteerText('')
+    return
+  endif
+  var text = join(lines[start : last], "\n")
+  if text =~# '^\['
+    echom '输入以 [ 开头（历史区防线），整条拒绝'
+    return
+  endif
+  session.SteerText(text)
+  deletebufline(b, input_lnum + 1, '$')
+  appendbufline(b, '$', '')
+enddef
+
 # diff 审查标记（design D5）：state ∈ reviewing|accepted|rejected|pending
 export def MarkToolCall(id: string, state: string)
   var b = bufnr(BUFNAME)
@@ -303,6 +330,9 @@ def SetupWindow(win: number)
   if !exists('g:agent_shell_no_tab_map') || !g:agent_shell_no_tab_map
     win_execute(win, 'inoremap <buffer> <Tab> <ScriptCmd>agent_shell#complete#Tab()<CR>')
   endif
+  # M5 steering：<M-CR>（normal + insert；终端兼容见 README 附录）
+  win_execute(win, 'nnoremap <buffer> <M-CR> <ScriptCmd>agent_shell#render#SteerInput()<CR>')
+  win_execute(win, 'inoremap <buffer> <M-CR> <ScriptCmd>agent_shell#render#SteerInput()<CR>')
   SetupHighlight(win)
 enddef
 
@@ -316,12 +346,13 @@ def SetupHighlight(win: number)
     return  # 无窗口时跳过（syntax 需窗口上下文）
   endif
   var hl: list<string> = [
-    'You  Identifier', 'AI   String', 'TOOL Special', 'PLAN Statement',
+    'You  Identifier', 'Steer Special', 'AI   String', 'TOOL Special', 'PLAN Statement',
     'PERM WarningMsg', 'ERR  ErrorMsg', 'USE  Comment', 'CMD  Comment',
     'ACP  Comment', 'Sep  NonText',
   ]
   win_execute(win, [
     'syntax match AgentShellYou  "^\[你]"',
+    'syntax match AgentShellSteer "^\[你·STEER\]\|^\[STEER\]"',
     'syntax match AgentShellAI   "^\[AI]"',
     'syntax match AgentShellTOOL "^\[TOOL]"',
     'syntax match AgentShellPLAN "^\[PLAN]"',

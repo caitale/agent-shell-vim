@@ -51,6 +51,10 @@ var cur_mode = ''
 var config_opts: list<dict<any>> = []
 var id_set_mode = 0
 var last_set_mode = ''
+# M5 steering（add-steering design D1：四态；进程级缓存——load/new 不重置，Stop 重置）
+var steer_mode = 'unknown'   # unknown | native | queued | none
+var id_steer = 0
+var steer_probe_fails = 0
 
 export def Running(): bool
   return protocol.Running()
@@ -108,6 +112,12 @@ export def Start(preset_name: string)
     render.Log('ERR', $'未知 agent preset：{preset_name}。可用：' .. presets.Names()->join(' '))
     return
   endif
+  # steering preset 声明（add-steering design D4）
+  if preset->has_key('steering')
+    steer_mode = preset['steering']
+  else
+    steer_mode = 'unknown'
+  endif
   render.Log('UI', $'--- agent-shell：启动 {preset_name}（{preset->get("desc", preset["cmd"][0])}）---')
   # vim9script funcref 类型规则（diag14 实证）：lambda 只转发 script-local def
   protocol.SetCallbacks(
@@ -147,6 +157,8 @@ enddef
 
 export def Stop()
   protocol.Stop()
+  steer_mode = 'unknown'  # 进程级重置（add-steering design D1）
+  steer_probe_fails = 0
   session_id = ''
   perm_id_pending = 0
   pending_load = {}
@@ -428,12 +440,20 @@ def HandleResponse(msg: dict<any>)
     elseif id == id_session_new
       # spec：「session/new 被拒绝」——错误呈现，不进入可用会话
       render.Log('ERR', $'session/new 被拒绝（{err->get("code", "?")}）：{err->get("message", "")}')
+    elseif id == id_steer
+      HandleSteerError(err)
+      return  # C-3：steer 错误不走末尾 BusyClear（挂起轮不受影响——spec R3-3）
     elseif id == id_set_mode
       render.Log('MODE', $'模式切换被拒（{err->get("code", "?")}）：{err->get("message", "")}')
     elseif id == id_initialize
       render.Log('ERR', $'initialize 失败：{err->get("message", "")}')
     else
       render.Log('ERR', $'请求失败（id={id}）：{err->get("message", "")}')
+      # W6：queued steering 假阳性——专门提示
+      if steer_mode ==# 'queued' && steer_queued_ctx
+        render.Log('STEER', '该 agent 可能不支持排队（steering 降级后 prompt 被拒）——建议检查 preset steering 声明')
+        steer_queued_ctx = false
+      endif
     endif
     BusyClear()
     return
@@ -454,6 +474,10 @@ def HandleResponse(msg: dict<any>)
     render.Log('MODE', $'模式已切换：{cur_mode}')
     return
   endif
+  if id == id_steer
+    HandleSteerResult(result)
+    return
+  endif
   if id == id_session_new && type(result) == v:t_dict && result->has_key('sessionId')
     session_id = result['sessionId']
     render.Log('ACP', $'session 建立成功：{session_id}')
@@ -471,6 +495,14 @@ def HandleResponse(msg: dict<any>)
   endif
   if id == id_initialize
     render.Log('ACP', '握手完成')
+    # steering 能力声明（add-steering W4：claude 实测 _meta.steering.supported）
+    var meta = type(result) == v:t_dict ? result->get('_meta', {}) : {}
+    if type(meta) == v:t_dict
+      var st = meta->get('steering', {})
+      if type(st) == v:t_dict && st->get('supported', false) == true
+        steer_mode = 'native'
+      endif
+    endif
     return
   endif
 
@@ -488,6 +520,8 @@ def HandleResponse(msg: dict<any>)
   if type(result) == v:t_dict && result->has_key('stopReason')
     var stop = result['stopReason']
     render.Log('ACP', $'轮次结束 stopReason={stop}')
+    perm_id_pending = 0  # W-5：挂起轮结束（含 steer 注入）关权限残留窗口
+    steer_queued_ctx = false  # 轮次完成清 steer 语境
     BusyClear()
     return
   endif
@@ -579,6 +613,137 @@ def EnsureReady(): bool
   endif
   return true
 enddef
+
+# ---------- M5 steering（add-steering design D1/D2） ----------
+
+# 入口：组包+清槽一次完成（W-4）；分派按 steer_mode×busy 矩阵
+export def SteerText(text: string)
+  if !EnsureReady()
+    return
+  endif
+  var blocks: list<dict<any>> = []
+  if text !=# ''
+    add(blocks, {type: 'text', text: text})
+  endif
+  if !empty(pending_image)
+    add(blocks, {type: 'image', data: pending_image['b64'], mimeType: pending_image['mime']})
+    pending_image = {}
+  endif
+  if empty(blocks)
+    render.Log('STEER', '输入区为空')
+    return
+  endif
+  # preset 显式声明优先（Start 时已写入 steer_mode）
+  if steer_mode ==# 'none'
+    render.Log('STEER', '该 agent 不支持转向（preset 声明 none）——用普通 <CR> 发送')
+    return
+  endif
+  if steer_mode ==# 'native'
+    FireSteer(blocks)
+    return
+  endif
+  if steer_mode ==# 'queued'
+    SteerQueued(blocks)
+    return
+  endif
+  # unknown：首探（idle 也探——B1' 裁决）——回显延迟到结果确认（防降级双显：native 才回显）
+  steer_last_blocks = copy(blocks)
+  id_steer = protocol.NextId()
+  SendRaw({
+    jsonrpc: '2.0', id: id_steer, method: '_session/steering',
+    params: {sessionId: session_id, prompt: blocks},
+  })
+enddef
+
+def EchoSteerText(blocks: list<dict<any>>)
+  var t = ''
+  for b in blocks
+    if b->get('type', '') ==# 'text'
+      t = b['text']
+      break
+    endif
+  endfor
+  if t !=# ''
+    render.Log('你·STEER', t)
+  endif
+enddef
+
+var steer_last_blocks: list<dict<any>> = []  # 首探降级重发用
+
+def FireSteer(blocks: list<dict<any>>)
+  id_steer = protocol.NextId()
+  SendRaw({
+    jsonrpc: '2.0', id: id_steer, method: '_session/steering',
+    params: {sessionId: session_id, prompt: blocks},
+  })
+  # B2：本地回显仅 native（W-1：queued 由 agent 回推防双显）
+  EchoSteerText(blocks)
+enddef
+
+var steer_queued_ctx = false  # W6：当前 prompt 错误是否源于 steer 降级
+
+def SteerQueued(blocks: list<dict<any>>)
+  steer_queued_ctx = true
+  # W-2：客户端队列非空时交错警告
+  if busy && !empty(queue)
+    render.Log('STEER', $'注意：客户端队列 {len(queue)} 条将与桥端排队交错发送')
+  endif
+  if busy
+    render.Log('STEER', '排队语义：已交由 agent 服务端排队')
+    FirePrompt(blocks)
+  else
+    render.Log('STEER', '排队语义：空闲态按普通消息发送')
+    FirePrompt(blocks)
+  endif
+enddef
+
+def HandleSteerResult(result: any)
+  var r = type(result) == v:t_dict ? result : {}
+  var outcome = r->get('outcome', '')
+  var was_probe = steer_mode ==# 'unknown'
+  steer_mode = 'native'
+  steer_probe_fails = 0
+  if was_probe && !empty(steer_last_blocks)
+    # 首探成功：此刻才回显（native 确认）
+    EchoSteerText(steer_last_blocks)
+  endif
+  steer_last_blocks = []
+  if outcome ==# 'injected'
+    render.Log('STEER', '↪ 已注入当前轮次')
+  elseif outcome ==# 'startedNewTurn'
+    render.Log('STEER', '↪ 已开启新轮次')
+    busy = true  # 桥自起轮——客户端 busy 对齐
+    render.NotifyBusyChanged()
+  else
+    render.Log('STEER', $'↪ 未知响应：{json_encode(r)}')
+  endif
+enddef
+
+def HandleSteerError(err: dict<any>)
+  if err->get('code', 0) == -32601
+    # 方法不存在 → 降级 queued + 重发本次内容
+    steer_mode = 'queued'
+    steer_probe_fails = 0
+    render.Log('STEER', 'agent 不支持 steering 方法——降级为服务端排队语义')
+    if !empty(steer_last_blocks)
+      var blocks = steer_last_blocks
+      steer_last_blocks = []
+      SteerQueued(blocks)
+    endif
+    return
+  endif
+  # 其他错误：计数收敛（W3：连续 3 次 → none）
+  steer_probe_fails += 1
+  render.Log('ERR', $'steering 失败（{err->get("code", "?")}）：{err->get("message", "")}')
+  if steer_probe_fails >= 3
+    steer_mode = 'none'
+    render.Log('STEER', '连续探测失败——标记为不支持（可用 preset steering 声明覆盖）')
+  endif
+enddef
+
+# queued 假阳性：session/prompt 报错时的专门提示挂在 FirePrompt 的失败呈现外——
+# 由 HandleResponse 既有 error 分支呈现；此处只拦 steer 语境
+# （实现从简：queued 模式下 prompt 错误统一呈现 + W6 提示行）
 
 # M4：modes/configOptions 解析（握手 new 与 load 双处——D4 + 2026-11-20 实测）
 def ParseModes(result: dict<any>)
