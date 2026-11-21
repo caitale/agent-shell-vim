@@ -19,7 +19,7 @@
 
 ## What Changes
 
-- **`<M-CR>` steering 发送**：输入区（normal+insert）映射，读输入区内容（复用 SendInput 的提取逻辑）经 `_session/steering` 发送；不 busy 时提示并走普通发送（或直接发——design 决策）
+- **`<M-CR>` steering 发送**：输入区（normal+insert）映射，读输入区内容（复用 SendInput 的提取逻辑）；native（含 idle——startedNewTurn 桥自起轮）经 `_session/steering` 发送，queued 降级走 `session/prompt`
 - **能力探测**：per-preset 配置 `steering: 'native' | 'queued' | 'none'`（默认按方法探测缓存：首次 `_session/steering` 收到 -32601 即降级标记该 agent 为 queued 并改走 `session/prompt`——pi 语义；mock/claude 声明 native）
 - **queued 模式行为**：busy 时 `<M-CR>` 直接发 `session/prompt`（桥自动排队），UI 提示「已交由 agent 排队」；呈现 pi 的 `Queued message` 回显与 queueDepth
 - **outcome 呈现**：injected→「已注入当前轮次」；startedNewTurn→「已开启新轮次」；错误→按降级逻辑处理

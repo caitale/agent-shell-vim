@@ -13,7 +13,15 @@
 
 - **WHEN** 非 busy 状态且能力为 native（已知或探测成功）时按 `<M-CR>` 发送
 - **THEN** 仍经 `_session/steering` 发出（桥按 startedNewTurn 语义自起轮次——实测已验证）
-- **WHEN** 非 busy 且能力为 queued/none/unknown 首探失败
+
+#### Scenario: 空闲时首探
+
+- **WHEN** 非 busy 状态且能力未知时按 `<M-CR>` 发送
+- **THEN** 发送 `_session/steering` 探测（探测成功即按 native 流程呈现 outcome；-32601 则降级为 queued 并按排队语义重发本次内容）
+
+#### Scenario: 空闲时排队语义
+
+- **WHEN** 非 busy 状态且能力为 queued 时按 `<M-CR>` 发送
 - **THEN** 内容按普通 prompt 发送并提示
 
 #### Scenario: 转向不排队
@@ -23,8 +31,8 @@
 
 #### Scenario: 转向消息本地回显
 
-- **WHEN** 转向消息发出（无论 native/queued 路径）
-- **THEN** 聊天以可区分样式本地回显内容（如 `[你·STEER]`——claude 实测不回推 user_message_chunk，客户端自渲染）
+- **WHEN** 转向消息经 native 路径（`_session/steering`）发出
+- **THEN** 聊天以可区分样式本地回显内容（`[你·STEER]`——claude 实测不回推 user_message_chunk，客户端自渲染；queued 路径由 agent 回推 user_message_chunk，不做本地回显防双显）
 
 #### Scenario: 空输入转向拒绝
 
@@ -33,7 +41,7 @@
 
 ### Requirement: steering 能力探测与降级
 
-插件按 agent 维护 steering 能力标记（native / queued / none）：默认未知，首次转向时发送 `_session/steering`——收到 `-32601` 即标记 queued 并自动改走 `session/prompt`（服务端排队语义）；标记缓存到 agent 会话结束。用户可通过 preset 配置显式声明（`steering` 字段）覆盖探测。queued 模式下 busy 中发送走 `session/prompt`，聊天提示已交由 agent 排队。
+插件按 agent 维护 steering 能力标记（native / queued / none）：initialize 响应 `_meta` 声明 steering 支持时直接标记 native（免首探）；否则默认未知，首次转向时发送 `_session/steering`——收到 `-32601` 即标记 queued 并自动改走 `session/prompt`（服务端排队语义）。标记缓存到 agent 进程结束。用户可通过 preset 配置显式声明（`steering` 字段）覆盖探测。queued 模式下 busy 中发送走 `session/prompt`，聊天提示已交由 agent 排队。
 
 #### Scenario: 方法不支持自动降级
 
@@ -62,8 +70,8 @@
 
 #### Scenario: preset 声明 none
 
-- **WHEN** preset 配置 `steering: 'none'` 时按转向键
-- **THEN** 提示该 agent 不支持转向，建议普通发送
+- **WHEN** preset 配置 `steering: 'none'` 时按转向键（无论 busy 与否）
+- **THEN** 提示该 agent 不支持转向，建议普通发送，不发送任何消息
 
 ### Requirement: steering 结果呈现
 

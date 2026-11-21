@@ -35,7 +35,7 @@ SteerText() 分派：
   native → _session/steering（idle 也走——startedNewTurn 桥自起轮，实测已验；B3 决策②）
   queued → busy ? FirePrompt(session/prompt 桥端排) : SendPromptText
   none → 提示不支持
-  unknown（首探）→ 发 _session/steering（记 id_steer）
+  unknown（首探）→ 发 _session/steering（记 id_steer）——**idle 也探**（B1' 裁决：探测早缓存早；mock 无 _meta 声明下纯 idle 使用也能达 native，否则 B3② 沦为鸡生蛋）
     响应 result.outcome → 标 native + 呈现
     响应 -32601 → 标 queued + 本次内容自动经 FirePrompt/SendPromptText 重发 + 提示排队语义
     其他错误 → 错误呈现；连续 3 次非 -32601 失败 → 标 none + 提示可 preset 覆盖（W3）
@@ -47,12 +47,15 @@ queued 路径 session/prompt 被 agent 拒 → 错误呈现 + 「该 agent 可�
 
 | 状态 | `<M-CR>` 行为 |
 |---|---|
-| 非 busy | 提示「空闲态直接发送」→ 走 SendPromptText（经 M4 组包：可带图） |
+| 非 busy + native | 仍走 `_session/steering`（B3②：startedNewTurn 桥自起轮——实测已验证；与 busy 路径同代码） |
+| 非 busy + unknown | **也首探** `_session/steering`（B1' 裁决）；探成即 native 流程 |
+| 非 busy + queued | 走 SendPromptText（经 M4 组包：可带图）+ 提示 |
+| busy + none / 非 busy + none | 提示不支持，**不发送**（以 D1 与 spec R2 为准——B1' 格②裁决） |
 | busy + native | `_session/steering` 直发（带 id_steer 语义 id；不进 queue、不占 queue 名额） |
 | busy + queued | FirePrompt 直发 session/prompt（**不入客户端 queue**——桥自己排；与 M4 的"busy→Enqueue"分流：steering 入口优先桥端排队，客户端 queue 仍服务普通 `<CR>`） |
 | busy + unknown | 按 D1 首探 |
 
-- steering 消息也经 M4 组包（text?+image）复用 AttachImage 槽——`<M-CR>` 与 `<CR>` 的组包一致
+- steering 消息也经 M4 组包（text?+image）复用 AttachImage 槽——`<M-CR>` 与 `<CR>` 的组包一致；**清槽责任（W-4）：组包与清槽在 SteerText 入口一次完成**（native 直发/降级重发均复用已组 blocks，不二次取槽——防 sticky 附件或降级丢图）
 - busy 中 steer 的 queued 路径用 FirePrompt 直发：busy 已 true，不重复置位；其响应 stopReason 到达时 BusyClear 照常出队——**W2 防护**：queued steer 时若客户端队列非空，追加一行警告「客户端队列 N 条将与桥端排队交错发送」（pi FIFO 兜底顺序仍正确；跨桥假阳性由 W6 错误呈现防护）；README 写明交错后果
 - 归档补充：claude initialize `_meta.claudeCode.promptQueueing:true`（桥也有队列能力）——M4 客户端队列与桥端队列的并存策略后续迭代评估，本 change 不动
 
@@ -62,7 +65,8 @@ queued 路径 session/prompt 被 agent 拒 → 错误呈现 + 「该 agent 可�
 - `render.SteerInput()`：复用 SendInput 的提取（空输入提示；`[` 防线同样适用）→ `session.SteerText(text)`
 - 提示样式：`[STEER] ↪ 已注入当前轮次` / `[STEER] ↪ 已开启新轮次` / `[STEER] 排队语义：已交由 agent 服务端排队` / `[STEER] 空闲态：按普通消息发送`
 - pi 的 `Queued message` agent_message_chunk 由既有渲染通道自然呈现（无需特判）
-- **转向消息本地回显（B2）**：发出即 `render.Log('你·STEER', text)`——claude 实测不回推 user_message_chunk，客户端自渲染；样式 `[你·STEER] …` 与 `[STEER] ↪ …` outcome 行配对
+- **客户端权限残留窗口（W-5）**：收到挂起轮的 stopReason（steer 注入生效路径）时顺带 `perm_id_pending=0`——关闭 mock 作废权限后的 stale 误触窗口（一行，夹具侧无需改）
+- **转向消息本地回显（B2/W-1）**：**仅 native 路径**本地回显 `[你·STEER] …`（claude 实测不回推 user_message_chunk）；queued 路径经 session/prompt，pi 会回推 user_message_chunk——**不做本地回显防双显**，`[STEER]` 排队提示行仍发
 - 空输入且无附件 → 复用 SendInput 空提示（N5）
 
 ### D4：presets 声明
