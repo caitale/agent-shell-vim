@@ -1,10 +1,39 @@
 # agent-shell.vim
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Vim](https://img.shields.io/badge/Vim-9.1%2B-019833?logo=vim)](https://www.vim.org)
+[![CI](https://github.com/caitale/agent-shell-vim/actions/workflows/test.yml/badge.svg)](https://github.com/caitale/agent-shell-vim/actions/workflows/test.yml)
+
 **为狭义 Vim（9.1+）实现 ACP（Agent Client Protocol）客户端**——像 Zed / Emacs agent-shell / Neovim agentic.nvim 那样，在编辑器内与任意 ACP agent（Claude Code、pi coding agent、Gemini CLI 等）对话。
 
 - 纯 vim9script，零外部依赖（仅 Vim 内建 `job_start` / `json_encode`）
 - 不做 Neovim 兼容（Neovim 用户推荐 [agentic.nvim](https://github.com/carlos-algms/agentic.nvim) 或 [hermes.nvim](https://github.com/Ruddickmg/hermes.nvim)）
 - 协议闭环经三 agent 实测：mock / claude-agent-acp / pi（@geohar/pi-acp 桥）
+
+## 演示
+
+一段与 Claude Code 的日常协作（右侧聊天窗 + 改动审查 + 中途转向）：
+
+```vim
+:AgentStart claude        " 启动 claude 桥（preset 可自定义命令）
+:AgentOpen right          " 右侧打开聊天窗口
+
+" ── 输入区写入 ──────────────────────────────
+" 帮我把 README 的安装章节补充 vim 8 的降级说明
+" <CR> 发送 → agent 流式回复；修改文件后 TOOL 折叠块出现（待审查）标记
+
+d                         " 光标在折叠块上按 d → 新 tab vimdiff 审查
+]a                        " 接受改动（✓ 标记，回到聊天）
+
+" agent 跑偏了？轮次进行中直接写输入区按 <M-CR>：
+" 不改安装章节了，改为补一条 FAQ 条目
+" ↪ [STEER] 已注入当前轮次——agent 立即改变方向（claude 桥实测生效）
+
+:AgentUsage               " 查看 token 累计（in/out 或总量口径）
+:AgentSessionList         " 列出历史会话，:AgentSessionLoad 2 恢复上下文
+```
+
+首次试用建议先用内置 mock（零 token）：`:AgentStart` + `:AgentOpen`，体验输入区/权限流/改动审查的完整闭环。
 
 ## 安装
 
@@ -148,14 +177,20 @@ CI：GitHub Actions，Vim 9.1/9.2 矩阵（`.github/workflows/test.yml`）。
 
 ## Roadmap
 
-M0–M4 ✅ → M5 差异化：steering ✅ + traffic 回放 ✅（真实流量零 token 回归）→ 待做 popup 预览→ M3 会话管理（list/load/resume，编辑器↔终端互通）→ M4 生产化（@文件与 /命令补全、队列、成本、图片附件）→ M5 差异化（traffic 回放测试、steering、图片预览）。详见 `research/competitive-analysis/`。
+**已交付**：M0 骨架 → M1 聊天 UI 基线 → M2 改动审查（vimdiff）→ M3 会话管理 → M4 生产力（补全/队列/成本/模式/图片）→ M5-a steering 中途转向 + M5-b traffic 回放。
+
+**Backlog**（按用户反馈优先）：popup 预览、图片预览、多会话并行、编辑器↔终端互通。详见 `research/competitive-analysis/`。
 
 ## 目录
 
 ```
 plugin/agent-shell.vim        入口：命令与配置
-autoload/agent_shell/         protocol / session / render / presets / diff / sessions / complete 七模块
+autoload/agent_shell/         protocol / session / render / presets / diff / sessions / complete / replay 八模块
 t/                            headless 测试 + mock 夹具 + 手动冒烟
 research/                     调研资料（spike、竞品分析、roadmap）
 openspec/                     spec 驱动开发的变更与规格
 ```
+
+## License
+
+[MIT](LICENSE)
