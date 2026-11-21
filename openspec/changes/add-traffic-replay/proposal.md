@@ -15,9 +15,9 @@ M0–M5-a 的回归防线是"mock 夹具 + 89 断言"——mock 是我们按 wir
 - `:AgentReplay <file>` 命令：手动回放任意 dump 文件（排障工具，同时是本 change 的验收路径）
 - 夹具再生的说明文档：`t/replay/README.md`（如何用 `g:agent_shell_debug` 录新流量、如何挑选场景）
 
-## 三桥流量样本能力对照（实测，2026-11-21）
+## 两桥流量样本能力对照（实测，2026-11-21；入库 claude 样本已重录为 17 行完整轮次版——旧 8 行为半链路残片弃用）
 
-| 流量特征 | claude（/tmp/smoke_debug.jsonl） | pi（research/steering-probe/steer_pi.jsonl） |
+| 流量特征 | claude（/tmp/replay_claude_full.jsonl 重录版） | pi（research/steering-probe/steer_pi.jsonl） |
 |---|---|---|
 | 方向判别 | 形状规则成立（8 行全分类正确） | 成立 |
 | 服务端请求 | `_auth/status_update` 为通知；暂无 request_permission 样本 | 无 |

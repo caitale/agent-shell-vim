@@ -37,12 +37,17 @@
 #### Scenario: claude 全链路样本锚点
 
 - **WHEN** 回放 claude 全链路样本（initialize/new/prompt/回显/chunk/usage_update×3/stopReason——2026-11-21 重录，17 行）
-- **THEN** 回放新增区出现：轮次结束行（stopReason=end_turn）、agent 回复渲染（[AI] 行且含 pong）、回放统计行（replayed=14）；且回放后 `:AgentUsage` 呈现标准口径累计行（in/out，来自样本的 inputTokens/outputTokens）
+- **THEN** 回放新增区出现：轮次结束行（stopReason=end_turn）、agent 回复渲染（[AI] 行且含 pong）、回放统计行（replayed=14）；且回放后 `:AgentUsage` 呈现总量口径累计行（样本 usage_update 仅含 used——inputTokens 拆分在 stopReason 响应的 result.usage 中、当前解析链不消费）
 
 #### Scenario: diff 与 steering 锚点（待样本）
 
 - **WHEN** 尚无含 edit 六事件或 steering 响应的入库样本（当前两份样本均无此流量）
-- **THEN** 该两锚点暂不设自动断言；样本录制指南（t/replay/README.md）列出为待录场景，入库时同步补锚点
+- **THEN** 该两锚点暂不设自动断言；样本录制指南（t/replay/README.md）列出为待录场景（另含：带 inputTokens/outputTokens 拆分的 usage_update），入库时同步补锚点
+
+#### Scenario: 回放 id 与测试进程语义 id 隔离
+
+- **WHEN** 回放含响应行的样本（任意 id 值）
+- **THEN** 回放器对响应 id 做高段重映射，确保不与测试进程的语义 id（initialize/new/list/load/steer/set_mode）撞车——回放行为不依赖测试进程的 id 历史
 
 #### Scenario: diff 解析锚点
 

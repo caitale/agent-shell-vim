@@ -43,15 +43,16 @@ export def RunAndReport(file: string)     # Run + render.Log 统计行（:AgentR
 - **B2 id 重映射**：回放的响应行 `id += 1000`（高段隔离）——HandleResponse 的语义 id（id_initialize/id_session_new/id_list/id_load/id_steer/id_set_mode）在组I 时刻早已漂移到远大于样本 id（1/2/3），但为消除对测试进程 id 历史的依赖（撞 id_load/id_steer 即假行为），重映射后必然落入形状判别段：new 响应（sessionId 形状）→ Register + ParseModes；prompt 响应（stopReason）→ BusyClear（queue 空安全）。**副作用约束**：Register 会把 claude/pi sessionId 以 current_preset 名义写入测试登记表——组I 断言「回放前后 Registry() 条目数不变」防污染扩散（登记表本身是 /tmp 测试路径，进程退出即弃）
 - 无 timer/无 sleep：同步逐条喂（真实流量的顺序即因果序）
 - steer_mode 污染说明：initialize 响应重映射后不走 id_initialize 分支 → 不会设 steer_mode='native'（该副作用仅在手动 :AgentReplay 干净进程出现，无害）
+- **N-2 完整副作用清单**：session_id/cur_mode/session_title 被样本值覆盖（组I 后无消费者）；usage 由 new 边界清零后由样本 usage_update 重推（顺序：new 响应在 prompt 之前——正确）；perm 无样本则无挂起；busy 由 stopReason 收口。组I 后 AgentStop 兜底
 
 ## D4：样本入库
 
-`t/replay/claude-full.jsonl`：从 /tmp/smoke_debug.jsonl 取材（真实 claude 全链路：initialize/new/prompt/agent_message_chunk/usage/stopReason，8 行）。文件头注释：
+`t/replay/claude-full.jsonl`：2026-11-21 **重录**完整轮次样本（/tmp/replay_claude_full.jsonl，17 行——旧 /tmp/smoke_debug.jsonl 为 magpie 502 期的半链路残片，弃用）。文件头注释：
 ```
 # source: claude-agent-acp (real), recorded 2026-11-20, scenario: full-chain smoke
 # sanitized: no credentials present (manual session, wire contains cwd/path only)
 ```
-`t/replay/pi-queued.jsonl`：从 research/steering-probe/steer_pi.jsonl 摘排队流核心段。**W3 摘录标准**：只摘 update 流（user/agent_message_chunk、`Queued message` 形状）与 prompt 的 stopReason 响应；**不含 initialize/new 响应**（避免 Register('mock', pi-sid) 与 ParseModes 覆盖的握手副作用——id 重映射下它们会走形状判别触发 Register；不含则纯粹驱动渲染链）。摘 20–40 行，头部标注"excerpt"。
+`t/replay/pi-queued.jsonl`：从 research/steering-probe/steer_pi.jsonl（162 行）摘排队流核心段。**W3 摘录标准（复评修③：非连续挑选、保持因果序）**：样本几何为 Queued 在 L6、首个 stopReason 在 L136——连续段需 131 行超标；改为**按因果序挑选**：Queued chunk（L6 附近）→ 若干 agent_message_chunk → Starting queued message → stopReason 响应，共约 20 行；**不含 initialize/new 响应**（避免 Register/ParseModes 握手副作用）。头部标注"excerpt, non-contiguous, causal order preserved"。
 
 `t/replay/README.md`：录制指南（设 g:agent_shell_debug → 跑场景 → grep 检查无 token/key 字样 → 头注释 → 入库）。
 
@@ -67,9 +68,9 @@ export def RunAndReport(file: string)     # Run + render.Log 统计行（:AgentR
 
 断言清单：
 - `replay_claude_full`：Run('t/replay/claude-full.jsonl') → replayed==14 && skipped_client==3 && bad==0；新增区含 stopReason=end_turn、[AI] 行含 pong、`replayed=14` 统计行（RunAndReport 路径）
-- `replay_usage_standard`：回放后调 agent_shell#session#ShowUsage() → 新增区含 `累计 in=` 标准口径行（样本 inputTokens=12789 等——不断言具体数值，只断言口径与累计行出现）
+- `replay_usage_standard`：回放后调 agent_shell#session#ShowUsage() → 新增区含 `累计 total=` **总量口径**行（B-1 复评修正：样本 usage_update 仅 used 字段；inputTokens/outputTokens 拆分在 stopReason 响应 result.usage 中、HandleResponse 不消费——解析层改动超本 change 范围，待录场景记录）
 - `replay_pi_queued`：Run('t/replay/pi-queued.jsonl') → replayed>0；新增区含 Queued message 回显
-- `replay_registry_clean`：回放前后 len(Registry()) 不变（B2 副作用约束）——**注**：Register 是 LRU 前插去重，claude-sid 若恰好已在登记表（前一轮回放）则条目数不变但内容更新——断言「不新增」即可
+- `replay_registry_clean`（W-2 断言结构写死）：**独立二次回放** claude-full——首次回放（断言①）已把 claude-sid Register 进表；断言④回放前记 len(Registry())、再 Run 一次、回放后 len 相等（LRU 按 sessionId 去重：二次回放只前插更新同一条目，不新增）
 - `replay_missing_file`：RunAndReport 不存在路径 → **新增区**含"文件不存在"（历史已有该串——行数锚隔离）
 - `replay_bad_lines`：临时文件 2 行坏 JSON + 1 行合法通知 → bad==2 && replayed==1（回放不中断）
 
