@@ -21,4 +21,4 @@
 - [x] 4.1 t/test_protocol_session.vim 组I（插入点 H4 后；**锚点=全 buffer 唯一特征串——行数锚被插入式写入证伪，见 design 勘误**）：claude 锚点（replayed==14/skipped==3/bad==0/新增区 stopReason+pong+统计行）、usage **总量口径**行（回放后 ShowUsage → `累计 total=`——B-1 复评修正）、pi 排队（Queued message，**非连续挑选摘录 W-3**）、registry 不增（**独立二次回放**前后 len 相等——W-2）、missing file 新增区、bad lines（bad==2 && replayed==1）
 - [x] 4.2 run.sh 全绿两连跑 **100 PASS 0 FAIL**（89 现役+组I 8+子进程 11−修复 4 条基线静默丢失断言复活后对账 100=89 主文件 Check 全执行+11 子进程）
 - [x] 4.3 README 里程碑行更新；tasks 全勾；validate
-- [ ] 4.4 verify（三维： Completeness/Correctness/Coherence）→ 处理发现 → archive → push → CI 绿
+- [x] 4.4 verify（三维： Completeness/Correctness/Coherence）→ 处理发现 → archive → push → CI 绿
