@@ -97,6 +97,9 @@ enddef
 # ---------- update 渲染（逐类型行为，spec: acp-session + chat-ui） ----------
 
 var did_mark_thought = false
+# 流式行状态（2026-11-22 真实 pi 试用暴露：token 级 chunk 逐行渲染碎屏——
+# ACP 语义 chunk 应拼接。stream_lnum=0 表示不在流式块中）
+var stream_lnum = 0
 # toolCallId → 折叠块摘要行号（diff 审查标记定位，design D5）
 var tool_blocks: dict<number> = {}
 # toolCallId → {title, status, mark}：摘要行结构化重建的真源（避免正则摘放）
@@ -105,18 +108,22 @@ var tool_meta: dict<dict<any>> = {}
 export def Update(upd: any)
   var st = upd->get('sessionUpdate', '')
   if st ==# 'user_message_chunk'
+    EndStream()
     did_mark_thought = false
     Log('你', upd->get('content', {})->get('text', ''))
   elseif st ==# 'agent_message_chunk'
-    Log('AI', upd->get('content', {})->get('text', ''))
+    StreamChunk(upd->get('content', {})->get('text', ''))
   elseif st ==# 'plan'
+    EndStream()
     var first = upd->get('entries', [])->get(0, {})
     Log('PLAN', $'{first->get("content", "")} ({first->get("status", "")})')
   elseif st ==# 'tool_call'
+    EndStream()
     RenderToolCall(upd)
   elseif st ==# 'tool_call_update'
     RenderToolCallUpdate(upd)
   elseif st ==# 'available_commands_update'
+    EndStream()
     var cmds = upd->get('availableCommands', [])
     Log('CMD', $'可用斜杠命令 {len(cmds)} 个：' .. cmds->mapnew((_: number, c: any) => c->get('name', '?'))->join(' '))
   elseif st ==# 'agent_thought_chunk'
@@ -125,10 +132,40 @@ export def Update(upd: any)
       did_mark_thought = true
     endif
   elseif st ==# 'usage_update'
+    EndStream()
     Log('USE', CompactUsage(upd))
   else
     # 未知类型静默跳过（spec：前向兼容）
   endif
+enddef
+
+# 流式拼接渲染：首 chunk 开块，后续 chunk 拼接到流式行（遇 \n 起新行）
+def StreamChunk(text: string)
+  if text ==# ''
+    return
+  endif
+  var b = ChatBuf()
+  if stream_lnum == 0
+    LogLines([$'[AI] '])
+    stream_lnum = input_lnum - 1
+  endif
+  # 按 \n 分段：末段留在当前行，其余各成一行
+  var segs = split(text, "\n", true)
+  var cur = getbufline(b, stream_lnum, stream_lnum)[0]
+  for i in range(len(segs))
+    if i == 0
+      setbufline(b, stream_lnum, cur .. segs[0])
+    else
+      appendbufline(b, stream_lnum + i - 1, segs[i])
+      stream_lnum += 1
+      input_lnum += 1
+    endif
+  endfor
+enddef
+
+# 流式块收尾（轮次结束/其他消息类型到达/会话切换时调用；幂等）
+export def EndStream()
+  stream_lnum = 0
 enddef
 
 # tool_call 折叠块（design D3）：

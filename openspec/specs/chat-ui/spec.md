@@ -43,6 +43,25 @@ TBD - created by archiving change add-chat-ui-baseline. Update Purpose after arc
 - **WHEN** agent 流式回复期间用户正在输入区编辑
 - **THEN** 新消息插入到分隔线之前，输入区内容与光标位置保持不变
 
+### Requirement: 流式消息拼接渲染
+
+同一轮次内的 agent_message_chunk 按到达顺序拼接呈现：首 chunk 开启流式块，后续 chunk 追加到块尾（chunk 文本内的换行分段成行），不逐 chunk 独立成行。流式块在轮次结束（stopReason）或其他消息类型（工具调用 / 计划 / 用户消息 / usage）到达时收尾；收尾后的下一轮次流式块重新开块，不拼接已收尾块。
+
+#### Scenario: token 级 chunk 拼接
+
+- **WHEN** agent 以 token 级粒度（每 chunk 一两个字符）流式发送一条完整消息
+- **THEN** 渲染为拼接后的完整文本行，不出现每 chunk 独立成行的碎片行
+
+#### Scenario: chunk 含换行分段
+
+- **WHEN** 单个 chunk 文本内含换行符
+- **THEN** 换行处分段成行，后续 chunk 继续拼接最后一段
+
+#### Scenario: 跨轮次不残留拼接
+
+- **WHEN** 前一轮次流式块已收尾（stopReason 已到达），新一轮次开始流式
+- **THEN** 新轮次首 chunk 开启新块，不追加到上一轮已收尾的行
+
 ### Requirement: busy 状态指示
 
 轮次进行期间聊天窗口状态行（局部 statusline）提供可见的进行中指示：prompt 发出后指示启动（旋转字符帧），stopReason 或错误到达后指示停止。指示不写入 buffer 内容（停止后 buffer 中无指示残留行）；窗口不显示（headless）时指示不启动但轮次状态仍可查询。

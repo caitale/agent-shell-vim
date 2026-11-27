@@ -571,11 +571,13 @@ def BusyClear()
     busy = false
     render.NotifyBusyChanged()
   endif
+  render.EndStream()  # 轮次结束收尾流式块（防跨轮次悬挂拼接）
   ScheduleDequeue()  # M4：轮次结束→队列依序接力
 enddef
 
 # M4 会话边界统一清理（design B1①/W1）：队列/附件/usage
 def ResetSessionState()
+  render.EndStream()  # 会话切换收尾流式块（防跨会话悬挂拼接）
   if dequeue_timer != 0
     timer_stop(dequeue_timer)
     dequeue_timer = 0

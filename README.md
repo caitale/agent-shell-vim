@@ -144,6 +144,26 @@ let g:agent_shell_agents = {
 :AgentStart gemini
 ```
 
+### 排障：`No such file or directory`
+
+`:AgentStart` 报 `env: xxx: No such file or directory` 或 `executing job failed` 时，几乎都是 **Vim job 继承的 PATH 找不到 agent**（典型：agent 用与终端不同的 npm prefix 安装、或 GUI 启动的 Vim 继承不到 shell 的 PATH）。前置确认：
+
+```sh
+command -v pi-acp claude-agent-acp   # 终端找得到 ≠ Vim 找得到
+```
+
+修法是在 preset 命令前用 `env` 补 PATH（注意 npm 的 agent 多为 `#!/usr/bin/env node`，**node 所在 bin 目录也要一并进 PATH**）：
+
+```vim
+let s:nodebin = '/path/to/npm-prefix/bin'   " 含 node 与 agent 两者的 bin 目录
+let g:agent_shell_agents = {
+  \ 'claude': {'cmd': ['env', 'PATH=' . s:nodebin . ':' . $PATH, 'claude-agent-acp']},
+  \ 'pi':    {'cmd': ['env', 'PATH=' . s:nodebin . ':' . $PATH, '-u', 'NODE_OPTIONS', 'pi-acp']},
+  \ }
+```
+
+进一步排查：`let g:agent_shell_verbose = 1` 透传 agent stderr，`let g:agent_shell_debug = '/tmp/acp.jsonl'` 落盘原始 JSONL。
+
 ## 配置
 
 | 变量 | 作用 | 默认 |
@@ -166,7 +186,7 @@ UI 说明：轮次进行中聊天窗口状态行显示旋转 busy 指示；工�
 ## 测试
 
 ```sh
-./t/run.sh        # headless 全链路（100 断言，零 token）
+./t/run.sh        # headless 全链路（103 断言，零 token）
 
 traffic 回放（M5-b）：`t/replay/` 里的真实流量样本（claude/pi 录制）经 `:AgentReplay <file>` 回放驱动全解析链——mock 夹具验证"契约被正确建模"，回放验证"契约本身没被误读"（两者互补）。录制指南见 `t/replay/README.md`。
 # 真实 agent 冒烟（手动，耗 token）：

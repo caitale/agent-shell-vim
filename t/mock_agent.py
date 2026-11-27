@@ -196,8 +196,15 @@ class Agent:
             # 延迟到本响应之后：先回当前轮 stopReason 再 drain
             pass
         # 5) 流式回复（多 chunk 演示流式）
-        for piece in (f"收到：「{p['text']}」。", "这是一段流式输出，", "由 mock-agent 分三个 chunk 发出。"):
-            self.chunk("agent_message_chunk", {"type": "text", "text": piece})
+        # MOCK_STREAM_MODE=token：模拟 pi 的 token 级 chunk（每 chunk 1-2 字符）——
+        # 钉住"chunk 拼接渲染"行为（2026-11-22 真实 pi 试用暴露逐行渲染碎屏 bug）
+        if os.environ.get("MOCK_STREAM_MODE") == "token":
+            full = f"收到：「{p['text']}」。这是一段流式输出，由 mock-agent 分多个 chunk 发出。"
+            for ch in full:
+                self.chunk("agent_message_chunk", {"type": "text", "text": ch})
+        else:
+            for piece in (f"收到：「{p['text']}」。", "这是一段流式输出，", "由 mock-agent 分三个 chunk 发出。"):
+                self.chunk("agent_message_chunk", {"type": "text", "text": piece})
         # M4：usage_update（B2：双字段；MOCK_USAGE_MODE=used_only 只推 used——降级测试）
         if os.environ.get("MOCK_USAGE_MODE") == "used_only":
             self.chunk("usage_update", None, used=300, size=272000)
